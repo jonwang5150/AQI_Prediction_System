@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Iterable
+from contextlib import contextmanager
 
 
 COLUMNS = ["測站", "日期", "AQI", "空氣品質指標", "O3", "PM2.5", "PM10", "CO", "SO2", "NO2"]
@@ -44,6 +45,26 @@ def database_url_from_settings(settings):
         raise ValueError(
             "config.py 的 database_url 必須是包含主機、帳號與資料庫名稱的 PostgreSQL 網址。"
         ) from exc
+
+
+def create_database_engine(settings=None):
+    """所有讀寫共用相同的 driver、連線逾時與 SQL 參數隱藏設定。"""
+    from sqlalchemy import create_engine
+    if settings is None:
+        from config import settings
+    return create_engine(database_url_from_settings(settings),
+                         connect_args={"connect_timeout": 10}, hide_parameters=True)
+
+
+@contextmanager
+def database_connection(settings=None):
+    """短期查詢用連線；成功或失敗都關閉連線並釋放 engine。"""
+    engine = create_database_engine(settings)
+    try:
+        with engine.connect() as connection:
+            yield connection
+    finally:
+        engine.dispose()
 
 
 def parse_number(value: str, column: str) -> Decimal | None:
@@ -112,12 +133,17 @@ def _write_rows(
     batch_writer,
     *,
     settings,
-    batch_size: int,
+    batch_size: int | None,
     data_name: str,
 ) -> int:
     """使用單一交易批次寫入資料，回傳處理筆數。"""
+    if settings is None:
+        from config import settings
+    if batch_size is None:
+        batch_size = settings.batch_size
+    if batch_size <= 0:
+        raise ValueError("batch_size 必須大於 0")
     try:
-        from sqlalchemy import create_engine
         from sqlalchemy.exc import SQLAlchemyError
         from sqlalchemy.orm import Session
 
@@ -129,8 +155,7 @@ def _write_rows(
     total = 0
     engine = None
     try:
-        url = database_url_from_settings(settings)
-        engine = create_engine(url, connect_args={"connect_timeout": 10}, hide_parameters=True)
+        engine = create_database_engine(settings)
         with engine.begin() as connection:
             Base.metadata.create_all(connection)
             with Session(bind=connection) as session:
@@ -156,12 +181,6 @@ def _write_rows(
 
 def update_rows(rows: Iterable[dict], *, settings=None, batch_size: int | None = None) -> int:
     """在單一交易中新增或更新已驗證的觀測資料。"""
-    if settings is None:
-        from config import settings
-    if batch_size is None:
-        batch_size = settings.batch_size
-    if batch_size <= 0:
-        raise ValueError("batch_size 必須大於 0")
 
     try:
         from db_models import upsert_batch
@@ -184,12 +203,6 @@ def update_prediction_rows(
     batch_size: int | None = None,
 ) -> int:
     """在單一交易中新增或更新已驗證的預測資料。"""
-    if settings is None:
-        from config import settings
-    if batch_size is None:
-        batch_size = settings.batch_size
-    if batch_size <= 0:
-        raise ValueError("batch_size 必須大於 0")
 
     try:
         from db_models import upsert_prediction_batch

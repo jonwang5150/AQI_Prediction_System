@@ -33,8 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv=None, update_callback=None) -> int:
-    args = build_parser().parse_args(argv)
+def launch_dashboard(args, update_callback=None) -> int:
+    """使用已解析的設定啟動，供 main.py 共用，避免重複解析命令列。"""
     show_prediction_visualization(
         station=args.station,
         initial_window_days=args.window_days,
@@ -45,6 +45,10 @@ def main(argv=None, update_callback=None) -> int:
         update_callback=update_callback,
     )
     return 0
+
+
+def main(argv=None, update_callback=None) -> int:
+    return launch_dashboard(build_parser().parse_args(argv), update_callback=update_callback)
 
 
 if __name__ == "__main__":

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import and_, or_, create_engine, func, select
+from sqlalchemy import and_, or_, func, select
 from datetime import timedelta
 
 from config import settings
 from db_models import AirQualityHourly, AirQualityPrediction, AirQualityPrediction8h
-from update_db import database_url_from_settings
+from update_db import database_connection
 
 
 def load_prediction_data(station: str, source: str = "8h", horizon: int = 1,
@@ -73,16 +73,8 @@ def load_prediction_data(station: str, source: str = "8h", horizon: int = 1,
             .where(AirQualityPrediction.station == station)
             .order_by(AirQualityPrediction.predicted_at)
         )
-    engine = create_engine(
-        database_url_from_settings(settings),
-        connect_args={"connect_timeout": 10},
-        hide_parameters=True,
-    )
-    try:
-        with engine.connect() as connection:
-            return pd.read_sql(statement, connection)
-    finally:
-        engine.dispose()
+    with database_connection(settings) as connection:
+        return pd.read_sql(statement, connection)
 
 
 def evaluate_prediction_data(datasets: dict[str, pd.DataFrame]) -> pd.DataFrame:

@@ -9,21 +9,22 @@
 from __future__ import annotations
 
 import argparse
-import pickle
 import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
-from sqlalchemy import create_engine, select
 from sqlalchemy.exc import SQLAlchemyError
 
 import update_db
 from config import settings
-from db_models import AirQualityHourly
 from pipeline_v1.model import LSTMModel
-from prediction_data_process import prepare_observation_data, read_observation_files
+from model_checkpoint import load_checkpoint_data, preprocessing_from_checkpoint, restore_model
+from prediction_data_process import (
+    prepare_observation_data, read_database_observations, resolve_observation_data,
+    validate_prediction_period, complete_observation_timeline, scale_observation_features,
+)
 
 
 
@@ -48,80 +49,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def load_checkpoint(path: Path) -> tuple[LSTMModel, list[str], int, np.ndarray, np.ndarray]:
-    if not path.is_file():
-        raise FileNotFoundError(f"找不到模型檔：{path}")
-
-    try:
-        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
-    except TypeError:  # 相容尚未提供 weights_only 參數的舊版 PyTorch
-        checkpoint = torch.load(path, map_location="cpu")
-    except pickle.UnpicklingError:
-        # 專案既有 checkpoint 含 NumPy array；PyTorch 2.6 的安全模式不接受它。
-        # 請只對可信任的本機模型使用此 fallback。
-        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-
-    required = {
-        "model_state_dict",
-        "model_config",
-        "features",
-        "window_size",
-        "scaler_mean",
-        "scaler_scale",
-    }
-    # difference()：找出「存在於 required，但不存在於 checkpoint」的項目。
-    missing = required.difference(checkpoint)
-    if missing:
-        raise ValueError(f"模型 checkpoint 缺少欄位：{', '.join(sorted(missing))}")
-
-    features = list(checkpoint["features"])
-    window_size = int(checkpoint["window_size"])
-    scaler_mean = np.asarray(checkpoint["scaler_mean"], dtype=float)
-    scaler_scale = np.asarray(checkpoint["scaler_scale"], dtype=float)
-    if len(features) != len(scaler_mean) or len(features) != len(scaler_scale):
-        raise ValueError("checkpoint 的 features 與 scaler 維度不一致")
-    if np.any(scaler_scale == 0):
-        raise ValueError("checkpoint 含有無效的 scaler_scale=0")
-
-    model = LSTMModel(**checkpoint["model_config"])
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
+    checkpoint = load_checkpoint_data(path)
+    features, window_size, scaler_mean, scaler_scale = preprocessing_from_checkpoint(checkpoint)
+    model = restore_model(LSTMModel, checkpoint)
     return model, features, window_size, scaler_mean, scaler_scale
 
 
 def load_database_data(station: str, query_start: pd.Timestamp, end=None) -> pd.DataFrame:
     end = PREDICTION_END if end is None else pd.Timestamp(end)
-    columns = {
-        "O3": AirQualityHourly.o3,
-        "PM2.5": AirQualityHourly.pm25,
-        "PM10": AirQualityHourly.pm10,
-        "CO": AirQualityHourly.co,
-        "SO2": AirQualityHourly.so2,
-        "NO2": AirQualityHourly.no2,
-    }
-    statement = (
-        select(
-            AirQualityHourly.observed_at.label("日期"),
-            AirQualityHourly.aqi.label("AQI"),
-            *[column.label(name) for name, column in columns.items()],
-        )
-        .where(
-            AirQualityHourly.station == station,
-            AirQualityHourly.observed_at >= query_start.to_pydatetime(),
-            AirQualityHourly.observed_at < end.to_pydatetime(),
-        )
-        .order_by(AirQualityHourly.observed_at)
-    )
-
-    engine = create_engine(
-        update_db.database_url_from_settings(settings),
-        connect_args={"connect_timeout": 10},
-        hide_parameters=True,
-    )
-    try:
-        with engine.connect() as connection:
-            return pd.read_sql(statement, connection)
-    finally:
-        engine.dispose()
+    with update_db.database_connection(settings) as connection:
+        return read_database_observations(
+            connection, station, query_start, end - pd.Timedelta(hours=1))
 
 
 def complete_hourly_timeline(
@@ -130,22 +68,9 @@ def complete_hourly_timeline(
     end=None,
 ) -> tuple[pd.DataFrame, int]:
     """補齊缺少的整點列，並回傳補入的時間列數。"""
-    if data.empty:
-        raise ValueError("指定的測站與時段在資料庫中沒有資料")
-    if data["日期"].duplicated().any():
-        duplicates = data.loc[data["日期"].duplicated(), "日期"].dt.strftime("%Y-%m-%d %H:%M")
-        raise ValueError(f"資料庫有重複時間：{', '.join(duplicates.head(5))}")
+    end = PREDICTION_END if end is None else pd.Timestamp(end)
+    return complete_observation_timeline(data, query_start, end - pd.Timedelta(hours=1))
 
-    expected = pd.date_range(query_start, PREDICTION_END if end is None else end, freq="h", inclusive="left")
-    actual = pd.DatetimeIndex(data["日期"])
-    missing = expected.difference(actual)
-    completed = (
-        data.set_index("日期")
-        .reindex(expected)
-        .rename_axis("日期")
-        .reset_index()
-    )
-    return completed, len(missing)
 
 def predict_period(
     model: LSTMModel,
@@ -163,10 +88,7 @@ def predict_period(
     if window_size <= 0:
         raise ValueError("window_size 必須大於 0")
 
-    start_time = pd.Timestamp(start)
-    end_time = pd.Timestamp(end)
-    if start_time >= end_time:
-        raise ValueError("預測開始時間必須早於結束時間")
+    start_time, end_time = validate_prediction_period(start, end)
 
     data = scaled_data.sort_values("日期").reset_index(drop=True)
     dates = pd.to_datetime(data["日期"])
@@ -212,38 +134,23 @@ def main(data=None, argv: list[str] | None = None) -> int:
         raise ValueError("data 與 --data 不可同時提供")
     start = pd.Timestamp(args.start) if args.start else PREDICTION_START
     end = pd.Timestamp(args.end) if args.end else PREDICTION_END
-    if (pd.isna(start) or pd.isna(end) or start.tzinfo is not None or end.tzinfo is not None
-            or start != start.floor("h") or end != end.floor("h") or start >= end):
-        raise ValueError("start/end 必須是無時區的整點時間，且 start < end")
+    start, end = validate_prediction_period(start, end)
     model, features, window_size, scaler_mean, scaler_scale = load_checkpoint(args.model)
     query_start = start - pd.Timedelta(hours=window_size)
 
-    if data is None:
-        data = (read_observation_files(args.data) if args.data is not None
-                else load_database_data(args.station, query_start, end))
+    data = resolve_observation_data(
+        data, args.data, lambda: load_database_data(args.station, query_start, end))
     data = prepare_observation_data(
         data, args.station, query_start, end - pd.Timedelta(hours=1))
-    data["日期"] = pd.to_datetime(data["日期"])
     data, missing_hours = complete_hourly_timeline(data, query_start, end)
-    # 真實值保留原始缺口，不能把前向補值當成評估用觀測。
-    period_actual = data.loc[data["日期"].between(start, end, inclusive="left"), ["日期", "AQI"]].copy()
-
     missing_features = {"AQI", *features}.difference(data.columns)
     if missing_features:
         raise ValueError(f"觀測資料缺少必要欄位：{', '.join(sorted(missing_features))}")
-    for feature in features:
-        data[feature] = pd.to_numeric(data[feature], errors="coerce")
-    # 僅使用過去觀測值進行前向補值，避免補值時使用未來資料。
-    missing_before = int(data[features].isna().sum().sum())
-    data.loc[:, features] = data[features].ffill()
-    
-    if data[features].isna().any().any():
-        raise ValueError("模型特徵補值後仍含空值，無法建立預測視窗")
-
- 
-
+    # 真實值保留原始缺口，不能把前向補值當成評估用觀測。
+    period_actual = data.loc[data["日期"].between(start, end, inclusive="left"), ["日期", "AQI"]].copy()
+    values, missing_before = scale_observation_features(data, features, scaler_mean, scaler_scale)
     scaled_data = data.copy()
-    scaled_data.loc[:, features] = (data[features].to_numpy(dtype=float) - scaler_mean) / scaler_scale
+    scaled_data.loc[:, features] = values
     predictions = predict_period(
         model,
         scaled_data,

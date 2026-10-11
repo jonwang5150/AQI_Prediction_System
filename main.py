@@ -11,7 +11,7 @@ import sys
 from threading import Lock
 
 import pandas as pd
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 import crawl_to_db
@@ -19,40 +19,47 @@ import predict_2026
 import predict_2026_8h
 import show_2026_prediction
 from config import settings
-from db_models import AirQualityHourly
-from prediction_data_process import CRAWLER_COLUMNS
-from update_db import database_url_from_settings
+from db_models import AirQualityHourly, AirQualityPrediction, AirQualityPrediction8h
+from prediction_data_process import read_database_observations
+from update_db import database_connection
 
 
-UPDATE_START = pd.Timestamp("2026-08-01")
 UPDATE_LOCK = Lock()
 
 
-def load_update_context(station, query_start, cutoff):
-    """讀取已有觀測及歷史視窗；新下載資料由爬蟲直接交給模型。"""
-    engine = create_engine(database_url_from_settings(settings),
-                           connect_args={"connect_timeout": 10}, hide_parameters=True)
-    try:
-        with engine.connect() as connection:
-            latest = connection.scalar(select(func.max(AirQualityHourly.observed_at)).where(
-                AirQualityHourly.station == station,
-                AirQualityHourly.observed_at <= cutoff.to_pydatetime(),
-                AirQualityHourly.aqi.is_not(None),
-            ))
-            if latest is None:
-                raise ValueError("指定測站沒有歷史 AQI 觀測，請先匯入歷史資料")
-            statement = select(*[getattr(AirQualityHourly, name) for name in CRAWLER_COLUMNS]).where(
-                AirQualityHourly.station == station,
-                AirQualityHourly.observed_at >= query_start.to_pydatetime(),
-                AirQualityHourly.observed_at <= latest,
-            ).order_by(AirQualityHourly.observed_at)
-            return pd.Timestamp(latest), pd.read_sql(statement, connection)
-    finally:
-        engine.dispose()
+def load_update_context(station, lookback, cutoff):
+    """依觀測與預測進度決定增量區間，只讀待預測資料及必要歷史視窗。"""
+    with database_connection(settings) as connection:
+        latest = connection.scalar(select(func.max(AirQualityHourly.observed_at)).where(
+            AirQualityHourly.station == station,
+            AirQualityHourly.observed_at <= cutoff.to_pydatetime(),
+        ))
+        if latest is None:
+            raise ValueError("指定測站沒有歷史 AQI 觀測，請先匯入歷史資料")
+        latest = pd.Timestamp(latest)
+        single_last = connection.scalar(select(func.max(AirQualityPrediction.predicted_at)).where(
+            AirQualityPrediction.station == station,
+            AirQualityPrediction.predicted_at <= latest,
+        ))
+        complete_targets = select(AirQualityPrediction8h.target_at).where(
+            AirQualityPrediction8h.station == station,
+            AirQualityPrediction8h.target_at <= latest,
+        ).group_by(AirQualityPrediction8h.target_at, AirQualityPrediction8h.model_version).having(
+            func.count(func.distinct(AirQualityPrediction8h.horizon_hours)) == 8,
+        ).subquery()
+        multi_last = connection.scalar(select(func.max(complete_targets.c.target_at)))
+        starts = {
+            "single": pd.Timestamp(single_last if single_last is not None else latest) + pd.Timedelta(hours=1),
+            "8h": pd.Timestamp(multi_last if multi_last is not None else latest) + pd.Timedelta(hours=1),
+        }
+        query_start = min(starts.values()) - pd.Timedelta(hours=lookback)
+        context = read_database_observations(
+            connection, station, query_start, latest, model_columns=False)
+        return latest, context, starts
 
 
 def update_to_latest(station: str, progress=None, now=None) -> str:
-    """接續爬取、重建 8/1 起預測；重試可補完先前只成功寫入觀測的批次。"""
+    """由最後觀測的下一小時爬取；各模型只補算尚未完成的目標時段。"""
     if not UPDATE_LOCK.acquire(blocking=False):
         raise ValueError("目前已有更新工作執行中，請稍候")
     try:
@@ -70,10 +77,9 @@ def update_to_latest(station: str, progress=None, now=None) -> str:
         report(0.04, "載入 v2 模型 checkpoint")
         multi_checkpoint = predict_2026_8h.load_checkpoint(predict_2026_8h.PROJECT_DIR / "aqi_lstm_8h_model.pth")
         lookback = max(single_checkpoint[2], multi_checkpoint[2] + multi_checkpoint[3] - 1)
-        query_start = UPDATE_START - pd.Timedelta(hours=lookback)
         report(0.06, "讀取資料庫歷史觀測與模型輸入視窗")
-        previous, context = load_update_context(station, query_start, cutoff)
-        crawl_start = max(UPDATE_START, previous + pd.Timedelta(hours=1))
+        previous, context, starts = load_update_context(station, lookback, cutoff)
+        crawl_start = previous + pd.Timedelta(hours=1)
         downloaded = []
         if crawl_start <= cutoff:
             report(0.10, f"下載 {crawl_start} 至 {cutoff} 已發布的小時資料")
@@ -92,20 +98,24 @@ def update_to_latest(station: str, progress=None, now=None) -> str:
         observations = observations.drop_duplicates(["station", "observed_at"], keep="last")
         valid_aqi = pd.to_numeric(observations["aqi"], errors="coerce").notna()
         latest = observations.loc[valid_aqi, "observed_at"].max()
-        if pd.isna(latest) or latest < UPDATE_START - pd.Timedelta(hours=1):
-            raise ValueError("尚無足夠的新觀測可接續 2026-08-01 的預測")
+        if pd.isna(latest):
+            raise ValueError("模型輸入視窗內沒有有效 AQI 觀測")
+        if all(start > latest for start in starts.values()):
+            return (f"目前沒有新的有效 AQI 觀測需要預測。資料表最後時間：**{previous}**；"
+                    f"有效 AQI 截至 **{latest}**（台灣時間）。本次取得 {len(downloaded):,} 筆觀測，保留既有預測。")
         observations = observations.loc[observations["observed_at"] <= latest].copy()
         report(0.50, "執行 v1 單步模型")
-        if latest >= UPDATE_START:
+        if latest >= starts["single"]:
             predict_2026.main(data=observations, argv=[
-                "--station", station, "--start", str(UPDATE_START),
+                "--station", station, "--start", str(starts["single"]),
                 "--end", str(latest + pd.Timedelta(hours=1)),
             ])
         report(0.72, "執行 v2 歷史回測與未來 8 小時預測")
-        predict_2026_8h.main(data=observations, argv=[
-            "--station", station, "--start", str(UPDATE_START),
-            "--end", str(latest + pd.Timedelta(hours=9)), "--latest-origin", str(latest),
-        ])
+        if latest >= starts["8h"]:
+            predict_2026_8h.main(data=observations, argv=[
+                "--station", station, "--start", str(starts["8h"]),
+                "--end", str(latest + pd.Timedelta(hours=9)), "--latest-origin", str(latest),
+            ])
         report(0.95, "重新載入圖表與評估指標")
         return (f"更新完成：本次取得 {len(downloaded):,} 筆觀測。實際觀測截至 **{latest}**（台灣時間）；"
                 f"8h 預測延伸至 **{latest + pd.Timedelta(hours=8)}**。"
@@ -118,8 +128,8 @@ def main(argv=None) -> int:
     # 使用專案實際檔名 show_2026_prediction.py，維持原有參數及四種圖表。
     args = show_2026_prediction.build_parser().parse_args(argv)
     print(f"Python 執行環境：{sys.executable}", flush=True)
-    return show_2026_prediction.main(
-        argv=argv, update_callback=lambda progress: update_to_latest(args.station.strip(), progress))
+    return show_2026_prediction.launch_dashboard(
+        args, update_callback=lambda progress: update_to_latest(args.station.strip(), progress))
 
 
 if __name__ == "__main__":
