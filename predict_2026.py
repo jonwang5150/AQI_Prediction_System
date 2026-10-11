@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""從 PostgreSQL 載入資料，使用既有 checkpoint 預測指定期間的逐時 AQI。"""
+"""使用現成爬蟲資料或 PostgreSQL 觀測，以既有 checkpoint 預測逐時 AQI。
+
+現成檔案：python predict_2026.py --data downloaded.csv
+記憶體資料：main(data=crawled_rows, argv=["--station", "木柵站"])
+未提供資料時才查詢 PostgreSQL；預測結果仍寫入資料庫。
+"""
 
 from __future__ import annotations
 
@@ -18,6 +23,7 @@ import update_db
 from config import settings
 from db_models import AirQualityHourly
 from pipeline_v1.model import LSTMModel
+from prediction_data_process import prepare_observation_data, read_observation_files
 
 
 
@@ -29,6 +35,9 @@ PREDICTION_END = pd.Timestamp("2026-08-01 00:00:00")
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--station", default="木柵站", help="資料庫中的測站名稱")
+    parser.add_argument("--start", default=None, help="目標開始時間（包含），預設 2026-01-01")
+    parser.add_argument("--end", default=None, help="目標結束時間（不包含），預設 2026-08-01")
+    parser.add_argument("--data", type=Path, nargs="+", help="現成爬蟲資料檔（CSV／ODS／XLSX／XLS），可指定多個；略過資料庫讀取")
     parser.add_argument(
         "--model",
         type=Path,
@@ -79,7 +88,8 @@ def load_checkpoint(path: Path) -> tuple[LSTMModel, list[str], int, np.ndarray, 
     return model, features, window_size, scaler_mean, scaler_scale
 
 
-def load_database_data(station: str, query_start: pd.Timestamp) -> pd.DataFrame:
+def load_database_data(station: str, query_start: pd.Timestamp, end=None) -> pd.DataFrame:
+    end = PREDICTION_END if end is None else pd.Timestamp(end)
     columns = {
         "O3": AirQualityHourly.o3,
         "PM2.5": AirQualityHourly.pm25,
@@ -97,7 +107,7 @@ def load_database_data(station: str, query_start: pd.Timestamp) -> pd.DataFrame:
         .where(
             AirQualityHourly.station == station,
             AirQualityHourly.observed_at >= query_start.to_pydatetime(),
-            AirQualityHourly.observed_at < PREDICTION_END.to_pydatetime(),
+            AirQualityHourly.observed_at < end.to_pydatetime(),
         )
         .order_by(AirQualityHourly.observed_at)
     )
@@ -117,6 +127,7 @@ def load_database_data(station: str, query_start: pd.Timestamp) -> pd.DataFrame:
 def complete_hourly_timeline(
     data: pd.DataFrame,
     query_start: pd.Timestamp,
+    end=None,
 ) -> tuple[pd.DataFrame, int]:
     """補齊缺少的整點列，並回傳補入的時間列數。"""
     if data.empty:
@@ -125,7 +136,7 @@ def complete_hourly_timeline(
         duplicates = data.loc[data["日期"].duplicated(), "日期"].dt.strftime("%Y-%m-%d %H:%M")
         raise ValueError(f"資料庫有重複時間：{', '.join(duplicates.head(5))}")
 
-    expected = pd.date_range(query_start, PREDICTION_END, freq="h", inclusive="left")
+    expected = pd.date_range(query_start, PREDICTION_END if end is None else end, freq="h", inclusive="left")
     actual = pd.DatetimeIndex(data["日期"])
     missing = expected.difference(actual)
     completed = (
@@ -191,18 +202,35 @@ def predict_period(
     return pd.DataFrame({"日期": prediction_dates, "預測AQI": predictions})
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def main(data=None, argv: list[str] | None = None) -> int:
+    """data 可為 DataFrame 或爬蟲列的 iterable；傳入空資料也不回查資料庫。"""
+    args = build_parser().parse_args(argv)
+    args.station = args.station.strip()
+    if not args.station:
+        raise ValueError("測站不可空白")
+    if data is not None and args.data is not None:
+        raise ValueError("data 與 --data 不可同時提供")
+    start = pd.Timestamp(args.start) if args.start else PREDICTION_START
+    end = pd.Timestamp(args.end) if args.end else PREDICTION_END
+    if (pd.isna(start) or pd.isna(end) or start.tzinfo is not None or end.tzinfo is not None
+            or start != start.floor("h") or end != end.floor("h") or start >= end):
+        raise ValueError("start/end 必須是無時區的整點時間，且 start < end")
     model, features, window_size, scaler_mean, scaler_scale = load_checkpoint(args.model)
-    query_start = PREDICTION_START - pd.Timedelta(hours=window_size)
+    query_start = start - pd.Timedelta(hours=window_size)
 
-    data = load_database_data(args.station, query_start)
+    if data is None:
+        data = (read_observation_files(args.data) if args.data is not None
+                else load_database_data(args.station, query_start, end))
+    data = prepare_observation_data(
+        data, args.station, query_start, end - pd.Timedelta(hours=1))
     data["日期"] = pd.to_datetime(data["日期"])
-    data, missing_hours = complete_hourly_timeline(data, query_start)
+    data, missing_hours = complete_hourly_timeline(data, query_start, end)
+    # 真實值保留原始缺口，不能把前向補值當成評估用觀測。
+    period_actual = data.loc[data["日期"].between(start, end, inclusive="left"), ["日期", "AQI"]].copy()
 
-    missing_features = set(features).difference(data.columns)
+    missing_features = {"AQI", *features}.difference(data.columns)
     if missing_features:
-        raise ValueError(f"資料庫查詢結果缺少模型特徵：{', '.join(sorted(missing_features))}")
+        raise ValueError(f"觀測資料缺少必要欄位：{', '.join(sorted(missing_features))}")
     for feature in features:
         data[feature] = pd.to_numeric(data[feature], errors="coerce")
     # 僅使用過去觀測值進行前向補值，避免補值時使用未來資料。
@@ -221,17 +249,13 @@ def main() -> int:
         scaled_data,
         features,
         window_size,
-        PREDICTION_START,
-        PREDICTION_END,
+        start,
+        end,
     )
 
-    period_actual = data.loc[
-        (data["日期"] >= PREDICTION_START) & (data["日期"] < PREDICTION_END),
-        ["日期", "AQI"],
-    ]
     result = predictions.merge(period_actual, on="日期", how="left")
     result = result.rename(columns={"AQI": "實際AQI"})
-    expected_count = len(pd.date_range(PREDICTION_START, PREDICTION_END, freq="h", inclusive="left"))
+    expected_count = len(pd.date_range(start, end, freq="h", inclusive="left"))
     if len(result) != expected_count:
         raise RuntimeError(f"預期產生 {expected_count} 筆預測，實際只有 {len(result)} 筆")
 
@@ -244,7 +268,7 @@ def main() -> int:
         settings=settings,
     )
     print(f"測站：{args.station}")
-    print(f"預測時段：{PREDICTION_START} 至 {PREDICTION_END}（不含結束時間）")
+    print(f"預測時段：{start} 至 {end}（不含結束時間）")
     print(f"補齊缺少的逐時資料：{missing_hours} 筆")
     print(f"污染物欄位前向補值：{missing_before} 格")
     print(f"完成 {written_count} 筆逐時 AQI 預測，已寫入 public.air_quality_predictions。")

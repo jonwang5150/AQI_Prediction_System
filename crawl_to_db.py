@@ -4,6 +4,8 @@
 python crawl_to_db.py --stations all --start 2026-08-01 --end 2026-09-06
 加上 --dry-run 只驗證、不連線資料庫。設定沿用 config.py。
 每個最多 30 天的下載批次各自提交；後續失敗不影響先前批次，可重新爬取更新。
+main(argv) 回傳全部批次的 list[dict]，可直接傳入預測程式的 main(data=rows, argv=...)。
+dry-run 同樣回傳解析完成的資料，但不寫入資料庫。
 依賴：requests beautifulsoup4 pandas odfpy SQLAlchemy psycopg[binary]
 Excel 格式另需 openpyxl（xlsx）或 xlrd（xls）。
 """
@@ -33,6 +35,11 @@ except ImportError:
 
 URL = "https://www.tldep.gov.taipei/Public/DownLoad/AqiHour.aspx"
 MAX_DAYS_PER_REQUEST = 30
+
+
+class CrawlBatchError(RuntimeError):
+    """可向使用者呈現的批次錯誤，包含日期與失敗階段。"""
+
 DATE_FIELD_START = "ctl00$CPH_Content$tbx_start"
 DATE_FIELD_END = "ctl00$CPH_Content$tbx_end"
 DOWNLOAD_BUTTON = "ctl00$CPH_Content$btn_download"
@@ -162,14 +169,26 @@ def normalize_station_names(raw: str, available: Iterable[str]) -> list[str]:
         return available_list
 
     names = [part.strip() for part in re.split(r"[,，、]", value) if part.strip()]
-    unknown = [name for name in names if name not in available_list]
+    # 網頁選項使用「木柵」，既有資料庫及試算表可能使用「木柵站」。
+    resolved = []
+    unknown = []
+    for name in names:
+        if name in available_list:
+            resolved.append(name)
+            continue
+        matches = [candidate for candidate in available_list
+                   if candidate.removesuffix("站") == name.removesuffix("站")]
+        if len(matches) == 1:
+            resolved.append(matches[0])
+        else:
+            unknown.append(name)
     if unknown:
         raise ValueError(
             f"找不到測站：{', '.join(unknown)}；可用測站：{', '.join(available_list)}"
         )
     if not names:
         raise ValueError("至少需要選擇一個測站")
-    return list(dict.fromkeys(names))
+    return list(dict.fromkeys(resolved))
 
 
 def looks_like_html(response: requests.Response) -> bool:
@@ -241,7 +260,10 @@ def parse_download_rows(content: bytes) -> Iterator[dict]:
         import pandas as pd
         frame = pd.read_excel(BytesIO(content), dtype=str, keep_default_na=False)
     except ImportError as exc:
-        raise RuntimeError("請安裝 pandas odfpy；Excel 格式另需 openpyxl 或 xlrd。") from exc
+        raise RuntimeError(
+            f"解析試算表缺少套件：{exc}。目前 Python：{sys.executable}。"
+            f'請在相同環境執行："{sys.executable}" -m pip install odfpy openpyxl xlrd'
+        ) from exc
     columns = [str(name).strip() for name in frame.columns]
     if len(set(columns)) != len(columns) or set(columns) != set(update_db.COLUMNS):
         raise ValueError(f"下載資料欄位必須為 {', '.join(update_db.COLUMNS)}")
@@ -272,11 +294,13 @@ def build_argument_parser(settings) -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
+def main(argv: list[str] | None = None, *, observed_after=None, observed_until=None,
+         station_names: dict[str, str] | None = None) -> list[dict]:
+    """逐批爬取及寫入，成功後回傳全部觀測；列出測站時回傳空清單。"""
     from config import settings
 
     parser = build_argument_parser(settings)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.delay < 0:
         parser.error("--delay 不可小於 0")
     if args.timeout <= 0:
@@ -288,7 +312,7 @@ def main() -> int:
         available = list(read_form(session, args.timeout).stations)
         if args.list_stations:
             print("可用測站：" + "、".join(available))
-            return 0
+            return []
         station_input = args.stations
         if station_input is None:
             print("可用測站：" + "、".join(available))
@@ -298,29 +322,48 @@ def main() -> int:
         end = args.end or parse_date(input("結束日期（YYYY-MM-DD）："))
         batches = list(split_date_range(start, end))
         total = 0
+        all_rows: list[dict] = []
         for index, (batch_start, batch_end) in enumerate(batches, start=1):
             print(f"[{index}/{len(batches)}] 爬取 {batch_start} 至 {batch_end} ...", flush=True)
+            stage = "下載試算表"
             try:
                 with download_batch(session, stations, batch_start, batch_end, args.timeout) as response:
-                    rows = parse_download_rows(response.content)
+                    stage = "解析試算表"
+                    # 先保存 generator 的內容，避免寫入時耗盡後無法回傳。
+                    rows = list(parse_download_rows(response.content))
+                    if station_names:
+                        rows = [{**row, "station": station_names.get(
+                            row["station"].removesuffix("站"), row["station"])} for row in rows]
+                    if observed_after is not None:
+                        rows = [row for row in rows if row["observed_at"] > observed_after]
+                    if observed_until is not None:
+                        # 網站按整天下載，排除未來時段及尚未發布的全空白佔位列。
+                        fields = ("aqi", "o3", "pm25", "pm10", "co", "so2", "no2")
+                        rows = [row for row in rows if row["observed_at"] <= observed_until
+                                and any(row.get(key) is not None for key in fields)]
                     if args.dry_run:
-                        count = sum(1 for _ in rows)
+                        count = len(rows)
                     else:
+                        stage = "寫入觀測資料庫"
                         count = update_db.update_rows(rows, settings=settings, batch_size=args.batch_size)
             except (requests.RequestException, OSError, RuntimeError, ValueError) as exc:
-                raise RuntimeError(f"批次 {batch_start} 至 {batch_end} 失敗：{exc}") from exc
+                raise CrawlBatchError(
+                    f"批次 {batch_start} 至 {batch_end}，{stage}失敗：{exc}"
+                ) from exc
             total += count
+            all_rows.extend(rows)
             action = "驗證通過" if args.dry_run else "已提交至資料庫"
             print(f"    {action}：{count:,} 筆")
             if index < len(batches) and args.delay:
                 time.sleep(args.delay)
         print(f"全部完成：共 {total:,} 筆" + ("；未連線資料庫。" if args.dry_run else "。"))
-    return 0
+    return all_rows
 
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        main()
+        raise SystemExit(0)
     except (requests.RequestException, OSError, RuntimeError, ValueError, LookupError) as exc:
         print(f"錯誤：{exc}", file=sys.stderr)
         raise SystemExit(1)

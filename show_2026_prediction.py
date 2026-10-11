@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""比較兩種 pipeline 的 AQI 曲線及 MAE、RMSE、Bias；8h 模型預設取 h1。"""
+"""以 Gradio 按鈕切換 AQI 趨勢與評估圖；8h 模型預設取 h1。"""
 
 from __future__ import annotations
 
@@ -28,18 +28,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=7,
         help="圖表初始顯示最後幾天，預設為 7 天",
     )
+    parser.add_argument("--port", type=int, default=None, help="Gradio 連接埠，預設自動尋找可用埠（由 7860 起）")
+    parser.add_argument("--no-browser", action="store_true", help="啟動服務但不自動開啟瀏覽器")
     return parser
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def main(argv=None, update_callback=None) -> int:
+    args = build_parser().parse_args(argv)
     show_prediction_visualization(
         station=args.station,
         initial_window_days=args.window_days,
         source=args.source,
         horizon=args.horizon,
+        server_port=args.port,
+        inbrowser=not args.no_browser,
+        update_callback=update_callback,
     )
-    print("互動式圖表已在瀏覽器開啟")
     return 0
 
 
