@@ -18,6 +18,7 @@ import crawl_to_db
 import predict_2026
 import predict_2026_8h
 import show_2026_prediction
+from build_knowledge_base import build_knowledge_base
 from config import settings
 from db_models import AirQualityHourly, AirQualityPrediction, AirQualityPrediction8h
 from prediction_data_process import read_database_observations
@@ -116,9 +117,12 @@ def update_to_latest(station: str, progress=None, now=None) -> str:
                 "--station", station, "--start", str(starts["8h"]),
                 "--end", str(latest + pd.Timedelta(hours=9)), "--latest-origin", str(latest),
             ])
-        report(0.95, "重新載入圖表與評估指標")
+        report(0.90, "更新向量知識庫")
+        knowledge_document_count = build_knowledge_base()
+        report(0.98, "重新載入圖表與評估指標")
         return (f"更新完成：本次取得 {len(downloaded):,} 筆觀測。實際觀測截至 **{latest}**（台灣時間）；"
                 f"8h 預測延伸至 **{latest + pd.Timedelta(hours=8)}**。"
+                f"向量知識庫已更新 {knowledge_document_count:,} 份文件。"
                 "網站尚未發布的小時不會當成真實觀測；無真實值的未來預測不納入評估。")
     finally:
         UPDATE_LOCK.release()
