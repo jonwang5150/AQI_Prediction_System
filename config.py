@@ -75,7 +75,7 @@ def _env_bool(name: str, default: bool) -> bool:
 def load_settings() -> Settings:
     load_dotenv(Path(__file__).with_name(".env"), override=False)
     return Settings(
-        database_url=os.getenv("DATABASE_URL", "postgresql+psycopg://postgres@localhost:5432/postgres"),
+        database_url=os.getenv("DATABASE_URL", "postgresql+psycopg://postgres:abc123@localhost:5432/postgres"),
         ollama_api_key=os.getenv("OLLAMA_API_KEY", ""),
         llm_base_url=os.getenv("LLM_BASE_URL", os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")),
         llm_model=os.getenv("LLM_MODEL", os.getenv("OLLAMA_CHAT_MODEL", "gpt-oss:120b-cloud")),
