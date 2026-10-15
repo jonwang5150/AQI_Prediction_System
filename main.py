@@ -17,7 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 import crawl_to_db
 import predict_1h
 import predict_8h
-from visualization import prediction_visualizations
+import visualizations
 from build_pgvector import build_knowledge_base
 from config import settings
 from db_models import AirQualityHourly, AirQualityPrediction, AirQualityPrediction8h
@@ -129,10 +129,10 @@ def update_to_latest(station: str, progress=None, now=None) -> str:
 
 
 def main(argv=None) -> int:
-    # 使用專案實際檔名 prediction_visualizations.py，維持原有參數及四種圖表。
-    args = prediction_visualizations.build_parser().parse_args(argv)
+    # 使用專案實際檔名 visualizations.py，維持原有參數及四種圖表。
+    args = visualizations.build_parser().parse_args(argv)
     print(f"Python 執行環境：{sys.executable}", flush=True)
-    return prediction_visualizations.launch_dashboard(
+    return visualizations.launch_dashboard(
         args, update_callback=lambda progress: update_to_latest(args.station.strip(), progress))
 
 

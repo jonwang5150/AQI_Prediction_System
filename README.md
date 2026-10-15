@@ -41,7 +41,7 @@ flowchart TD
     E --> G[記憶體中的爬蟲資料]
     F --> H[預測輸入與歷史視窗]
     G --> H
-    C --> I[predict_2026.py / predict_2026_8h.py]
+    C --> I[predict_1h.py / predict_8h.py]
     H --> I
     I --> J[(PostgreSQL 預測資料)]
     F --> K[真實值與預測對齊]
@@ -58,16 +58,15 @@ flowchart TD
 ```text
 DL_AQI/
 ├── main.py                       # Gradio 主入口，串接爬取、預測與刷新
-├── show_2026_prediction.py        # 圖表入口與顯示參數
-├── feature_visualizations.py     # 查詢預測、評估指標、Plotly 與 Gradio
+├── visualizations.py        # 圖表入口與顯示參數
 ├── crawl_to_db.py                 # 網站下載、解析、逐批寫入並回傳合併資料
 ├── update_db.py                   # 共用資料庫連線、欄位解析與交易寫入
 ├── db_models.py                   # 三張資料表的 ORM 定義與 upsert
 ├── config.py                      # 資料庫網址與寫入預設值
 ├── prediction_data_process.py     # 共用觀測查詢、資料來源選擇、時間整理與標準化
 ├── model_checkpoint.py            # 共用 checkpoint 載入、scaler 驗證與模型還原
-├── predict_2026.py                # v1 指定期間逐時預測
-├── predict_2026_8h.py             # v2 逐時多步回測及最新基準預測
+├── predict_1h.py                # v1 指定期間逐時預測
+├── predict_8h.py             # v2 逐時多步回測及最新基準預測
 ├── aqi_lstm_model.pth             # v1 checkpoint
 ├── aqi_lstm_8h_model.pth           # v2 checkpoint
 ├── pipeline_v1/
@@ -91,7 +90,7 @@ DL_AQI/
 └── CODE_WORKFLOW.md               # 舊版下載腳本流程紀錄
 ```
 
-實際圖表檔名是 `show_2026_prediction.py`。`CODE_WORKFLOW.md` 中提到的 `search_v2.py`、`serch.py` 不在目前專案中；現行下載入口為 `crawl_to_db.py`，操作以本 README 與目前程式為準。
+實際圖表檔名是 `visualizations.py`。`CODE_WORKFLOW.md` 中提到的 `search_v2.py`、`serch.py` 不在目前專案中；現行下載入口為 `crawl_to_db.py`，操作以本 README 與目前程式為準。
 
 ### 共用邏輯與維護位置
 
@@ -103,9 +102,9 @@ DL_AQI/
 | 資料庫觀測欄位與時間篩選 | `prediction_data_process.read_database_observations()` |
 | 記憶體資料／檔案／資料庫的來源選擇 | `prediction_data_process.resolve_observation_data()` |
 | 預測區間、逐時時間列、前向補值與標準化 | `prediction_data_process.py` |
-| 圖表啟動參數與 Gradio 入口 | `show_2026_prediction.build_parser()`、`launch_dashboard()` |
+| 圖表啟動參數與 Gradio 入口 | `visualizations.build_parser()`、`launch_dashboard()` |
 
-`predict_2026.py` 與 `predict_2026_8h.py` 保留各自的序列推論與結果寫入流程，並沿用 `load_checkpoint()`、`load_database_data()`、`main(data=..., argv=...)` 介面。v2 仍要求觀測涵蓋輸入區間首尾；共用補值函式只產生模型輸入，不修改評估用的原始真實值。`main.py` 的增量進度判斷不與一般歷史回測混用。
+`predict_1h.py` 與 `predict_8h.py` 保留各自的序列推論與結果寫入流程，並沿用 `load_checkpoint()`、`load_database_data()`、`main(data=..., argv=...)` 介面。v2 仍要求觀測涵蓋輸入區間首尾；共用補值函式只產生模型輸入，不修改評估用的原始真實值。`main.py` 的增量進度判斷不與一般歷史回測混用。
 
 ## 環境與安裝
 
@@ -197,8 +196,8 @@ python main.py
 
 ```powershell
 python crawl_to_db.py --stations 木柵站 --start 2025-12-30 --end 2026-07-31 --no-dry-run
-python predict_2026.py --station 木柵站
-python predict_2026_8h.py --station 木柵站
+python predict_1h.py --station 木柵站
+python predict_8h.py --station 木柵站
 python main.py --station 木柵站
 ```
 
@@ -208,7 +207,7 @@ python main.py --station 木柵站
 
 ### 啟動參數
 
-`main.py` 與 `show_2026_prediction.py` 使用相同的顯示參數：
+`main.py` 與 `visualizations.py` 使用相同的顯示參數：
 
 | 參數 | 預設 | 說明 |
 |---|---|---|
@@ -221,10 +220,10 @@ python main.py --station 木柵站
 
 ```powershell
 python main.py --station 木柵站 --horizon 8 --window-days 14 --port 7860
-python show_2026_prediction.py --source both --no-browser
+python -m visualizations --source both --no-browser
 ```
 
-`main.py` 呼叫 `show_2026_prediction.py` 啟動 Gradio，並提供更新功能。啟動時只顯示既有預測，不自動爬取或執行模型；單獨執行 `show_2026_prediction.py` 則是檢視介面。
+`main.py` 呼叫 `visualizations.py` 啟動 Gradio，並提供更新功能。啟動時只顯示既有預測，不自動爬取或執行模型；單獨執行 `visualizations.py` 則是檢視介面。
 
 ### 四種圖表
 
@@ -343,7 +342,7 @@ python -m pipeline_v2.run_model_new --data 20250101-20251231.csv --epochs 50 --w
 
 兩者都可使用 `--model` 指定輸出 checkpoint。訓練預設路徑相對於目前工作目錄，因此請從專案根目錄執行，讓 `main.py` 找得到輸出檔案。v1 未加 `--no-visualization` 時會開啟訓練資料的 Plotly 圖表。
 
-checkpoint 包含權重、模型設定、特徵順序、窗口大小與 scaler；v2 另有 `forecast_horizon`。雖然 v2 訓練入口可設定其他輸出長度，目前 `predict_2026_8h.py` 與資料表限制為 **8 小時**。
+checkpoint 包含權重、模型設定、特徵順序、窗口大小與 scaler；v2 另有 `forecast_horizon`。雖然 v2 訓練入口可設定其他輸出長度，目前 `predict_8h.py` 與資料表限制為 **8 小時**。
 
 ## 歷史回測與未來預測
 
@@ -352,7 +351,7 @@ checkpoint 包含權重、模型設定、特徵順序、窗口大小與 scaler�
 ### v1：逐時單步預測
 
 ```powershell
-python predict_2026.py --station 木柵站 --start 2026-08-01 --end 2026-08-12
+python predict_1h.py --station 木柵站 --start 2026-08-01 --end 2026-08-12
 ```
 
 可用參數：`--station`、`--model`、`--start`、`--end`、`--data`。未提供現成資料就查詢資料庫，完成後寫入 v1 預測表。**v1 目前沒有 `--dry-run` 參數。**
@@ -360,8 +359,8 @@ python predict_2026.py --station 木柵站 --start 2026-08-01 --end 2026-08-12
 ### v2：逐時歷史回測
 
 ```powershell
-python predict_2026_8h.py --station 木柵站 --start 2026-08-01 --end 2026-08-12
-python predict_2026_8h.py --station 木柵站 --start 2026-08-01 --end 2026-08-12 --dry-run
+python predict_8h.py --station 木柵站 --start 2026-08-01 --end 2026-08-12
+python predict_8h.py --station 木柵站 --start 2026-08-01 --end 2026-08-12 --dry-run
 ```
 
 除上述共用參數外，v2 有 `--batch-size`（預設 256）、`--dry-run`、`--latest-origin`。一般回測模式會為每個目標小時保留 h1～h8；例如一天有 `24 × 8 = 192` 筆預測。
@@ -377,7 +376,7 @@ python predict_2026_8h.py --station 木柵站 --start 2026-08-01 --end 2026-08-1
 假設資料確實已包含 `2026-10-11 13:00` 的觀測：
 
 ```powershell
-python predict_2026_8h.py --station 木柵站 --start 2026-08-01 --latest-origin "2026-10-11 13:00" --end "2026-10-11 22:00"
+python predict_8h.py --station 木柵站 --start 2026-08-01 --latest-origin "2026-10-11 13:00" --end "2026-10-11 22:00"
 ```
 
 此模式的 `--end` 必須等於 `latest-origin + 9 小時`，因為結束時間不包含；最後預測目標是 `latest-origin + 8 小時`。只使用截至最新基準的觀測，不以虛構的未來輸入補滿窗口。越遠的未來目標尚未具備全部八種歷史基準，因此不要求每個未來目標都有 h1～h8 八筆。
@@ -398,8 +397,8 @@ v2 一般回測模式需要觀測到 `end - 2 小時`；最新基準模式需要
 ### 從檔案讀取
 
 ```powershell
-python predict_2026.py --data downloaded.csv
-python predict_2026_8h.py --data batch1.ods batch2.ods --dry-run
+python predict_1h.py --data downloaded.csv
+python predict_8h.py --data batch1.ods batch2.ods --dry-run
 ```
 
 `--data` 可指定多個檔案，支援 CSV、ODS、XLSX、XLS。資料必須覆蓋所選預測期間及歷史視窗；重疊批次造成的重複時間須先整理。
@@ -408,8 +407,8 @@ python predict_2026_8h.py --data batch1.ods batch2.ods --dry-run
 
 ```python
 import crawl_to_db
-import predict_2026
-import predict_2026_8h
+import predict_1h
+import predict_8h
 
 station = "木柵站"
 rows = crawl_to_db.main(
@@ -418,8 +417,8 @@ rows = crawl_to_db.main(
     station_names={"木柵": station},
 )
 
-predict_2026.main(data=rows, argv=["--station", station])
-predict_2026_8h.main(data=rows, argv=["--station", station])
+predict_1h.main(data=rows, argv=["--station", station])
+predict_8h.main(data=rows, argv=["--station", station])
 ```
 
 `data` 可為 pandas DataFrame 或爬蟲列的 iterable。若兩個模型要共用資料，使用清單或 DataFrame，避免共用已耗盡的 generator。程式化呼叫請傳入 `argv`，避免讀取呼叫端自己的命令列參數。
@@ -504,15 +503,25 @@ python -m pip install odfpy
 - `main.py` 使用根目錄兩個固定檔名的 checkpoint；獨立預測與訓練入口才提供 `--model`。
 - 未提供排程更新、自動重新訓練、登入驗證或正式對外部署設定。
 - checkpoint 載入可能使用 pickle 相容模式，應使用自己訓練或可信任來源的檔案。
-- 目前未提供完整依賴鎖定檔；`test_*.py` 已移除，沒有隨附自動化測試套件。
+- 目前未提供完整依賴鎖定檔；RAG 查詢與介面整合可用 `python -m unittest test_rag_query -v` 測試。
 
 修改後可先用以下命令核對介面參數及爬蟲解析：
 
 ```powershell
 python main.py --help
-python predict_2026.py --help
-python predict_2026_8h.py --help
+python predict_1h.py --help
+python predict_8h.py --help
 python crawl_to_db.py --stations 木柵站 --start 2026-08-12 --end 2026-08-12 --dry-run
 ```
 
 再視需求使用 v2 的 `--dry-run` 驗證推論，最後檢查四種圖表、單一進度面板，以及更新失敗後的恢復行為。上述需要實際資料的操作，仍取決於來源網站與本機資料庫是否可用。
+
+## RAG 知識庫查詢
+
+每日摘要包含實際 AQI 最高／最低值、所有並列的測站與時間、有效觀測筆數與當日資料截止時間。極值直接使用所有測站的有效觀測，不限是否有預測配對；平均與誤差指標仍僅使用有效配對。只有觀測的日期也會建立摘要，無配對的指標標示無法計算。執行 `python build_pgvector.py` 可依原有固定 ID 更新文件及向量，無須刪表；資料截止時間不代表全日每小時皆已完整。
+
+啟動 `python main.py` 後，按圖表功能列中的「RAG 查詢」切換到查詢畫面，輸入完整問題並按「送出查詢」。回答下方的「查看參考摘要」列出實際檢索的文件；每次提問獨立處理，不保留對話上下文。按同一列的圖表或評估按鈕可切回對應畫面，查詢內容與回答會保留。
+
+查詢使用 `aqi_knowledge_base` 集合，只檢索每日與每月評估摘要，不會重新匯入文件。請先啟動 Ollama、準備設定的 embedding／聊天模型，並成功執行 `python build_pgvector.py`。設定沿用 `config.py` 的 `ollama_base_url`、`ollama_embedding_model`、`ollama_chat_model` 與 `top_k`；雲端聊天模型需要有效授權，問題與檢索摘要會送到該模型。
+
+摘要合併所有測站，使用最新寫入的 8h 預測，不套用圖表的測站或固定 h 篩選。明確指定單一年月（例如 `2026 年 8 月`、`2026-08`）時會篩選月摘要；指定年月日時會篩選當日摘要。月內每日問題會篩選該月的每日文件，但仍只取 top_k 筆；相對日期與複雜日期區間尚未支援精確解析。語意檢索僅取部分摘要，不能當作全期間排序或精確 SQL 統計。月摘要代表有效配對樣本，不保證整月資料完整。回答中的 `[1]` 等編號對應參考摘要。模型無法連線時會顯示錯誤並保留已檢索的摘要供查看。
