@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """使用現成爬蟲資料或 PostgreSQL 觀測，以既有 checkpoint 預測逐時 AQI。
 
-現成檔案：python predict_2026.py --data downloaded.csv
+現成檔案：python predict_1h.py --data downloaded.csv
 記憶體資料：main(data=crawled_rows, argv=["--station", "木柵站"])
 未提供資料時才查詢 PostgreSQL；預測結果仍寫入資料庫。
 """

@@ -82,7 +82,6 @@ paired AS (
     WHERE a.aqi IS NOT NULL
       AND p.predicted_aqi IS NOT NULL
       AND a.observed_at >= DATE '2026-01-01'
-      AND a.observed_at < DATE '2027-01-01'
 ),
 daily_changes AS (
     SELECT
@@ -100,7 +99,8 @@ daily_changes AS (
             ORDER BY observed_at
         ) AS previous_time
     FROM paired
-)
+),
+daily_metrics AS (
 SELECT
     DATE(observed_at) AS date,
     ROUND(AVG(actual_aqi)::numeric, 2) AS avg_actual,
@@ -121,7 +121,36 @@ SELECT
     ) AS opposite_direction_count
 FROM daily_changes
 GROUP BY DATE(observed_at)
-ORDER BY date
+),
+observations AS (
+    SELECT station, observed_at, aqi,
+           MAX(aqi) OVER (PARTITION BY DATE(observed_at)) AS max_aqi,
+           MIN(aqi) OVER (PARTITION BY DATE(observed_at)) AS min_aqi
+    FROM air_quality_hourly
+    WHERE aqi IS NOT NULL
+      AND observed_at >= DATE '2026-01-01'
+),
+daily_extremes AS (
+    SELECT DATE(observed_at) AS date,
+           MAX(aqi) AS max_actual_aqi,
+           MIN(aqi) AS min_actual_aqi,
+           COUNT(*) AS observation_count,
+           MAX(observed_at) AS observation_last_at,
+           JSONB_AGG(JSONB_BUILD_OBJECT('station', station, 'observed_at', observed_at)
+                     ORDER BY observed_at, station) FILTER (WHERE aqi = max_aqi) AS max_occurrences,
+           JSONB_AGG(JSONB_BUILD_OBJECT('station', station, 'observed_at', observed_at)
+                     ORDER BY observed_at, station) FILTER (WHERE aqi = min_aqi) AS min_occurrences
+    FROM observations
+    GROUP BY DATE(observed_at)
+)
+SELECT e.*, m.avg_actual, m.avg_predicted, m.mae, m.rmse, m.bias,
+       m.max_absolute_error,
+       COALESCE(m.sample_count, 0) AS sample_count,
+       COALESCE(m.valid_direction_pairs, 0) AS valid_direction_pairs,
+       COALESCE(m.opposite_direction_count, 0) AS opposite_direction_count
+FROM daily_extremes e
+LEFT JOIN daily_metrics m ON m.date = e.date
+ORDER BY e.date
 """
 
 
@@ -158,19 +187,33 @@ def _build_daily_documents(rows) -> list[Document]:
             round(opposite_count / valid_pairs * 100, 2)
             if valid_pairs > 0 else None
         )
-        ratio_text = opposite_ratio if opposite_ratio is not None else "無法計算"
+        ratio_text = f"{opposite_ratio}%" if opposite_ratio is not None else "無法計算"
+        def metric(name):
+            return row[name] if row[name] is not None else "無有效預測配對，無法計算"
+
+        def occurrences(name):
+            return "；".join(f"{item['station']} {item['observed_at']}" for item in row[name])
+
         content = f"""
 日期：{row['date']}
-平均實際 AQI：{row['avg_actual']}
-平均預測 AQI：{row['avg_predicted']}
-平均絕對誤差（MAE）：{row['mae']}
-均方根誤差（RMSE）：{row['rmse']}
-平均偏差（Bias）：{row['bias']}
-最大絕對誤差：{row['max_absolute_error']}
+實際極值範圍：當日所有測站的有效觀測，不限是否有預測配對
+當日實際 AQI 最高值：{row['max_actual_aqi']}
+最高值測站與時間（含並列）：{occurrences('max_occurrences')}
+當日實際 AQI 最低值：{row['min_actual_aqi']}
+最低值測站與時間（含並列）：{occurrences('min_occurrences')}
+有效觀測筆數：{row['observation_count']}
+當日觀測資料截至：{row['observation_last_at']}（台灣時間，不保證全日完整）
+以下平均與誤差僅計算有效預測配對樣本：
+平均實際 AQI：{metric('avg_actual')}
+平均預測 AQI：{metric('avg_predicted')}
+平均絕對誤差（MAE）：{metric('mae')}
+均方根誤差（RMSE）：{metric('rmse')}
+平均偏差（Bias）：{metric('bias')}
+最大絕對誤差：{metric('max_absolute_error')}
 有效配對樣本數：{row['sample_count']}
 有效方向比較次數：{valid_pairs}
 走勢相反次數：{opposite_count}
-走勢相反比例：{ratio_text}%
+走勢相反比例：{ratio_text}
 """.strip()
         documents.append(Document(
             page_content=content,
@@ -182,9 +225,16 @@ def _build_daily_documents(rows) -> list[Document]:
                 "date": str(row["date"]),
                 "year": row["date"].year,
                 "month": row["date"].month,
-                "mae": float(row["mae"]),
-                "rmse": float(row["rmse"]),
-                "bias": float(row["bias"]),
+                "mae": float(row["mae"]) if row["mae"] is not None else None,
+                "rmse": float(row["rmse"]) if row["rmse"] is not None else None,
+                "bias": float(row["bias"]) if row["bias"] is not None else None,
+                "max_actual_aqi": float(row["max_actual_aqi"]),
+                "min_actual_aqi": float(row["min_actual_aqi"]),
+                "max_occurrences": row["max_occurrences"],
+                "min_occurrences": row["min_occurrences"],
+                "observation_count": int(row["observation_count"]),
+                "observation_last_at": str(row["observation_last_at"]),
+                "extrema_scope": "all_stations_observations",
                 "sample_count": int(row["sample_count"]),
                 "opposite_ratio": opposite_ratio,
             },

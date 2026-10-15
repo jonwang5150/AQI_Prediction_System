@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """使用現成爬蟲資料或 PostgreSQL 逐時回測 8h 模型，目標區間為 [start, end)。
 
-預設：python predict_2026_8h.py
-包含 8/1 全天：python predict_2026_8h.py --end 2026-08-02
-僅檢查資料與推論：python predict_2026_8h.py --dry-run
-現成檔案：python predict_2026_8h.py --data downloaded.csv --dry-run
+預設：python predict_8h.py
+包含 8/1 全天：python predict_8h.py --end 2026-08-02
+僅檢查資料與推論：python predict_8h.py --dry-run
+現成檔案：python predict_8h.py --data downloaded.csv --dry-run
 記憶體資料：main(data=crawled_rows, argv=["--station", "木柵站"])
 未提供資料時才查詢 PostgreSQL。
 
