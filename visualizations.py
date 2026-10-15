@@ -173,8 +173,24 @@ def build_prediction_figures(
 
 def build_rag_panel():
     """建立預設隱藏的查詢區與共用提交事件。"""
+    from functools import partial
+
     import gradio as gr
-    from agent.rag_tool import query_knowledge_base
+    from langchain_ollama import ChatOllama
+
+    from agent.rag_tool import KnowledgeBaseTool, query_knowledge_base
+    from config import settings
+
+    headers = ({"Authorization": f"Bearer {settings.ollama_api_key}"}
+               if settings.ollama_api_key else {})
+    rag_model = ChatOllama(
+        model=settings.ollama_chat_model,
+        base_url=settings.ollama_base_url,
+        temperature=0,
+        client_kwargs={"headers": headers, "timeout": 120.0},
+    )
+    rag_tool = KnowledgeBaseTool.create(rag_model)
+    rag_query = partial(query_knowledge_base, runnable=rag_tool.runnable)
 
     with gr.Column(visible=False, elem_id="aqi-rag-panel") as panel:
         gr.Markdown("### AQI 知識庫查詢")
@@ -192,7 +208,7 @@ def build_rag_panel():
             sources = gr.Textbox(label="本次檢索依據", lines=8, max_lines=12,
                                  interactive=False, elem_id="aqi-rag-sources")
     gr.on(
-        triggers=[submit.click, question.submit], fn=query_knowledge_base,
+        triggers=[submit.click, question.submit], fn=rag_query,
         inputs=question, outputs=[answer, sources],
         concurrency_limit=1, concurrency_id="aqi-rag", trigger_mode="once",
         show_progress="full", show_progress_on=[answer],
