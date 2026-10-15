@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 from pydantic import ValidationError
 from sqlalchemy.dialects import postgresql
 
-from agent.sql_tool import QueryPlan, QuerySpec, SQLTool, TABLES, build_select, execute_plan
+from agent.sql_tool_old import QueryPlan, QuerySpec, SQLTool, TABLES, build_select, execute_plan
 
 
 class SQLToolTests(unittest.TestCase):

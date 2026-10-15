@@ -1,15 +1,33 @@
 """不呼叫外部服務的 RAG 邊界與介面整合測試。"""
 
+import json
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableLambda
 
 from agent import rag_tool
 
 
 class RagQueryTests(unittest.TestCase):
+    @patch("agent.rag_tool._vector_store")
+    def test_tool_uses_external_model(self, store):
+        store.return_value.similarity_search.return_value = [SimpleNamespace(
+            page_content="MAE：3.2",
+            metadata={"source": rag_tool.SUMMARY_SOURCES[0], "date": "2026-10-14"},
+        )]
+        model = RunnableLambda(lambda _: AIMessage(content="外部模型回答 [1]"))
+
+        result = json.loads(
+            rag_tool.KnowledgeBaseTool.create(model).invoke({"question": "MAE？"})
+        )
+
+        self.assertEqual(result["answer"], "外部模型回答 [1]")
+        self.assertIn("MAE：3.2", result["references"])
+
     def test_explicit_month_selects_monthly_documents(self):
         for question in ("2026 年 8月的平均實際 AQI 與平均預測 AQI 差多少？", "2026-08 的平均 AQI", "2026/8 平均 AQI"):
             with self.subTest(question=question):
@@ -23,57 +41,59 @@ class RagQueryTests(unittest.TestCase):
             self.assertEqual(query_filter, {"$and": [
                 {"source": rag_tool.SUMMARY_SOURCES[0]}, {"date": "2026-08-07"}]})
 
-    @patch("ollama.Client")
     @patch("agent.rag_tool._vector_store")
-    def test_missing_month_does_not_fall_back_to_other_periods(self, store, client):
+    def test_missing_month_does_not_fall_back_to_other_periods(self, store):
         store.return_value.similarity_search.return_value = []
-        answer, _ = rag_tool.query_knowledge_base("2026 年 8 月平均 AQI")
+        runnable = Mock()
+        answer, _ = rag_tool.query_knowledge_base(
+            "2026 年 8 月平均 AQI", runnable=runnable)
         self.assertIn("2026-08", answer)
         self.assertIn("找不到", answer)
-        client.assert_not_called()
+        runnable.invoke.assert_not_called()
         self.assertEqual(store.return_value.similarity_search.call_count, 1)
 
     @patch("agent.rag_tool._vector_store")
     def test_invalid_date_does_not_query(self, store):
-        answer, _ = rag_tool.query_knowledge_base("2026-02-30 的 AQI")
+        answer, _ = rag_tool.query_knowledge_base(
+            "2026-02-30 的 AQI", runnable=Mock())
         self.assertIn("日期無效", answer)
         store.assert_not_called()
 
     @patch("agent.rag_tool._vector_store")
     def test_blank_question_does_not_connect(self, store):
-        answer, sources = rag_tool.query_knowledge_base("  ")
+        answer, sources = rag_tool.query_knowledge_base("  ", runnable=Mock())
         self.assertIn("請先輸入", answer)
         self.assertEqual(sources, "")
         store.assert_not_called()
 
-    @patch("ollama.Client")
     @patch("agent.rag_tool._vector_store")
-    def test_empty_collection_does_not_call_model(self, store, client):
+    def test_empty_collection_does_not_call_model(self, store):
         store.return_value.similarity_search.return_value = []
-        answer, sources = rag_tool.query_knowledge_base("MAE？")
+        runnable = Mock()
+        answer, sources = rag_tool.query_knowledge_base("MAE？", runnable=runnable)
         self.assertIn("尚無", answer)
-        client.assert_not_called()
+        runnable.invoke.assert_not_called()
 
-    @patch("ollama.Client")
     @patch("agent.rag_tool._vector_store")
-    def test_grounded_answer_and_source_filter(self, store, client):
+    def test_grounded_answer_and_source_filter(self, store):
         store.return_value.similarity_search.return_value = [SimpleNamespace(
             page_content="MAE：3.2", metadata={"source": rag_tool.SUMMARY_SOURCES[0], "date": "2026-10-14"})]
-        client.return_value.chat.return_value = SimpleNamespace(message=SimpleNamespace(content="MAE 為 3.2 [1]"))
-        answer, sources = rag_tool.query_knowledge_base("MAE？")
+        runnable = Mock()
+        runnable.invoke.return_value = "MAE 為 3.2 [1]"
+        answer, sources = rag_tool.query_knowledge_base("MAE？", runnable=runnable)
         self.assertIn("3.2 [1]", answer)
         self.assertIn("2026-10-14", sources)
         self.assertEqual(store.return_value.similarity_search.call_args.kwargs["filter"],
                          {"source": {"$in": rag_tool.SUMMARY_SOURCES}})
-        self.assertIn("MAE：3.2", client.return_value.chat.call_args.kwargs["messages"][1]["content"])
+        self.assertIn("MAE：3.2", runnable.invoke.call_args.args[0]["sources"])
 
-    @patch("ollama.Client")
     @patch("agent.rag_tool._vector_store")
-    def test_model_failure_preserves_sources_without_exposing_error(self, store, client):
+    def test_model_failure_preserves_sources_without_exposing_error(self, store):
         store.return_value.similarity_search.return_value = [SimpleNamespace(
             page_content="MAE：3.2", metadata={})]
-        client.return_value.chat.side_effect = ConnectionError("secret-connection-string")
-        answer, sources = rag_tool.query_knowledge_base("MAE？")
+        runnable = Mock()
+        runnable.invoke.side_effect = ConnectionError("secret-connection-string")
+        answer, sources = rag_tool.query_knowledge_base("MAE？", runnable=runnable)
         self.assertIn("產生回答失敗", answer)
         self.assertNotIn("secret", answer)
         self.assertIn("MAE：3.2", sources)
@@ -88,7 +108,8 @@ class RagQueryTests(unittest.TestCase):
         self.assertIn("RAG 查詢", values)
         self.assertIn("送出查詢", values)
         self.assertIn("更新至最新", values)
-        self.assertTrue(any(fn.fn == rag_tool.query_knowledge_base for fn in app.fns.values()))
+        self.assertTrue(any(getattr(fn.fn, "func", None) == rag_tool.query_knowledge_base
+                            for fn in app.fns.values()))
         views = {fn.fn.args[0]: fn for fn in app.fns.values()
                  if getattr(fn.fn, "args", ()) and getattr(fn.fn.func, "__name__", "") == "select_view"}
         rag_result = views["rag"].fn()
@@ -102,14 +123,14 @@ class RagQueryTests(unittest.TestCase):
         self.assertNotIn("收合查詢", values)
         app.close()
 
-    @patch("ollama.Client")
     @patch("agent.rag_tool._vector_store")
-    def test_cloud_service_error_is_actionable(self, store, client):
+    def test_cloud_service_error_is_actionable(self, store):
         from ollama import ResponseError
         store.return_value.similarity_search.return_value = [SimpleNamespace(
             page_content="MAE：3.2", metadata={})]
-        client.return_value.chat.side_effect = ResponseError("upstream details", status_code=502)
-        answer, sources = rag_tool.query_knowledge_base("MAE？")
+        runnable = Mock()
+        runnable.invoke.side_effect = ResponseError("upstream details", status_code=502)
+        answer, sources = rag_tool.query_knowledge_base("MAE？", runnable=runnable)
         self.assertIn("HTTP 502", answer)
         self.assertNotIn("upstream details", answer)
         self.assertIn("MAE：3.2", sources)

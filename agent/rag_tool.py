@@ -1,9 +1,12 @@
 """查詢既有 AQI 摘要知識庫，回傳回答與參考依據。"""
 
+import asyncio
 from functools import lru_cache
+import json
 import logging
 import re
 from datetime import date
+from textwrap import dedent
 
 import sys
 from pathlib import Path
@@ -13,6 +16,11 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import settings
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import Runnable
+from langchain_core.tools import BaseTool
+from pydantic import BaseModel, Field
 
 
 COLLECTION_NAME = "aqi_knowledge_base"
@@ -75,7 +83,7 @@ def _vector_store():
     )
 
 
-def query_knowledge_base(question: str) -> tuple[str, str]:
+def query_knowledge_base(question: str, *, runnable: Runnable) -> tuple[str, str]:
     """每次獨立提問；回傳回答與實際檢索的摘要，不重建知識庫。"""
     question = (question or "").strip()
     if not question:
@@ -106,19 +114,7 @@ def query_knowledge_base(question: str) -> tuple[str, str]:
             sections.append(f"### [{index}] {kind} {period}\n\n{document.page_content}")
         sources = "\n\n---\n\n".join(sections)
         stage = "產生回答"
-        from ollama import Client
-
-        headers = {"Authorization": f"Bearer {settings.ollama_api_key}"} if settings.ollama_api_key else {}
-        client = Client(host=settings.ollama_base_url, headers=headers, timeout=120.0)
-        response = client.chat(
-            model=settings.ollama_chat_model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"參考摘要：\n{sources}\n\n問題：\n{question}"},
-            ],
-            options={"temperature": 0},
-        )
-        answer = response.message.content.strip()
+        answer = runnable.invoke({"question": question, "sources": sources}).strip()
         return answer or "模型未回傳回答，請重試；可先查看下方參考摘要。", sources
     except Exception as exc:
         # 不將可能含連線字串、金鑰或使用者問題的例外內容送到 UI／紀錄。
@@ -131,3 +127,50 @@ def query_knowledge_base(question: str) -> tuple[str, str]:
             return f"{stage}失敗：模型服務拒絕授權，請確認 Ollama 登入狀態或 API 金鑰。", sources
         return (f"{stage}失敗。請確認資料庫、Ollama 服務與設定的模型可用；"
                 "若使用雲端模型，請確認已登入或具備有效授權。可稍後重試。", sources)
+
+
+class KnowledgeBaseInput(BaseModel):
+    question: str = Field(
+        min_length=1,
+        max_length=4000,
+        description="要從 AQI 預測評估摘要知識庫查詢的問題",
+    )
+
+
+class KnowledgeBaseTool(BaseTool):
+    """讓 LangChain agent 調用既有的 AQI RAG 查詢流程。"""
+
+    name: str = "AQIKnowledgeBase"
+    description: str = dedent("""\
+        查詢 AQI 預測評估的向量知識庫，內容包含每日與每月的實際值、預測值、
+        MAE、RMSE、Bias、最大絕對誤差及走勢方向等歷史評估摘要。
+
+        適合用於：
+        - 詢問特定日期或月份的預測表現
+        - 比較實際 AQI 與預測 AQI
+        - 查詢 MAE、RMSE、Bias 或走勢相反比例
+
+        不適合用於未來預報、即時 AQI、逐筆原始觀測或任意資料庫查詢；
+        這些需求應改用相應的預測或 SQL 工具。輸入 question 應保留使用者指定的日期與指標。
+    """)
+    args_schema: type[BaseModel] = KnowledgeBaseInput
+    runnable: Runnable
+
+    @classmethod
+    def create(cls, llm: Runnable):
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", SYSTEM_PROMPT),
+            ("human", "參考摘要：\n{sources}\n\n問題：\n{question}"),
+        ])
+        pipeline = prompt | llm | StrOutputParser()
+        return cls(runnable=pipeline)
+
+    def _run(self, question: str) -> str:
+        answer, sources = query_knowledge_base(question, runnable=self.runnable)
+        return json.dumps(
+            {"answer": answer, "references": sources},
+            ensure_ascii=False,
+        )
+
+    async def _arun(self, question: str) -> str:
+        return await asyncio.to_thread(self._run, question)
