@@ -2,108 +2,19 @@
 
 from __future__ import annotations
 
+import argparse
+import sys
+from pathlib import Path
+
+# Allow direct execution from an IDE or from the visualization directory.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import numpy as np
 import pandas as pd
-from sqlalchemy import and_, or_, func, select
-from datetime import timedelta
-
-from config import settings
-from db_models import AirQualityHourly, AirQualityPrediction, AirQualityPrediction8h
-from update_db import database_connection
-
-
-def load_prediction_data(station: str, source: str = "8h", horizon: int = 1,
-                         include_future: bool = False) -> pd.DataFrame:
-    """每個目標時間只取一筆；多個模型版本以最新寫入者為準。"""
-    if source not in {"8h", "single"} or horizon not in range(1, 9):
-        raise ValueError("source 必須為 8h 或 single，horizon 必須介於 1～8")
-    if source == "8h":
-        prediction = AirQualityPrediction8h
-        latest = select(func.max(AirQualityHourly.observed_at)).where(
-            AirQualityHourly.station == station, AirQualityHourly.aqi.is_not(None),
-        ).scalar_subquery()
-        selection = prediction.horizon_hours == horizon
-        if include_future:
-            selection = or_(
-                and_(prediction.target_at <= latest, prediction.horizon_hours == horizon),
-                *[and_(prediction.horizon_hours == h,
-                       prediction.target_at == latest + timedelta(hours=h)) for h in range(1, 9)],
-            )
-        ranked = select(
-            prediction.station,
-            prediction.target_at,
-            prediction.predicted_aqi,
-            prediction.model_version,
-            prediction.horizon_hours,
-            func.row_number().over(
-                partition_by=prediction.target_at,
-                order_by=[prediction.created_at.desc(), prediction.model_version.asc()],
-            ).label("rank"),
-        ).where(
-            prediction.station == station,
-            selection,
-        ).subquery()
-        statement = (
-            select(
-                ranked.c.target_at.label("日期"),
-                ranked.c.predicted_aqi.label("預測AQI"),
-                AirQualityHourly.aqi.label("實際AQI"),
-                ranked.c.model_version.label("模型版本"),
-                ranked.c.horizon_hours.label("提前小時"),
-                (ranked.c.target_at > latest).label("未來預測"),
-            )
-            .outerjoin(AirQualityHourly, (
-                (AirQualityHourly.station == ranked.c.station)
-                & (AirQualityHourly.observed_at == ranked.c.target_at)
-            ))
-            .where(ranked.c.rank == 1)
-            .order_by(ranked.c.target_at)
-        )
-    else:
-        statement = (
-            select(
-                AirQualityPrediction.predicted_at.label("日期"),
-                AirQualityPrediction.predicted_aqi.label("預測AQI"),
-                func.coalesce(AirQualityHourly.aqi, AirQualityPrediction.actual_aqi).label("實際AQI"),
-            )
-            .outerjoin(AirQualityHourly, (
-                (AirQualityHourly.station == AirQualityPrediction.station)
-                & (AirQualityHourly.observed_at == AirQualityPrediction.predicted_at)
-            ))
-            .where(AirQualityPrediction.station == station)
-            .order_by(AirQualityPrediction.predicted_at)
-        )
-    with database_connection(settings) as connection:
-        return pd.read_sql(statement, connection)
-
-
-def evaluate_prediction_data(datasets: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """以所有模型共同具有有限預測與真實值的時間點評估，不補值。"""
-    aligned = {}
-    common = None
-    for source, data in datasets.items():
-        frame = data.set_index("日期")[["預測AQI", "實際AQI"]].apply(
-            pd.to_numeric, errors="coerce")
-        if frame.index.has_duplicates:
-            raise ValueError("評估資料的目標時間不可重複")
-        frame = frame.loc[np.isfinite(frame.to_numpy(dtype=float)).all(axis=1)]
-        aligned[source] = frame
-        common = frame.index if common is None else common.intersection(frame.index)
-    rows = []
-    for source, frame in aligned.items():
-        paired = frame.loc[common]
-        errors = (paired["預測AQI"] - paired["實際AQI"]).to_numpy(dtype=float)
-        count = len(errors)
-        rows.append({
-            "來源": source, "有效筆數": count,
-            "未納入筆數": len(datasets[source]) - count,
-            "MAE": float(np.abs(errors).mean()) if count else np.nan,
-            "RMSE": float(np.sqrt(np.mean(errors ** 2))) if count else np.nan,
-            "Bias": float(errors.mean()) if count else np.nan,
-            "評估開始": common.min() if count else pd.NaT,
-            "評估結束": common.max() if count else pd.NaT,
-        })
-    return pd.DataFrame(rows)
+from sqlalchemy.exc import SQLAlchemyError
+from visualization.load_prediction_data import load_prediction_data
+from visualization.evaluate_prediction_data import evaluate_prediction_data
 
 
 VIEW_LABELS = {
@@ -121,6 +32,24 @@ DASHBOARD_CSS = """
 #aqi-busy {padding: 24px !important; border: 1px solid #fdba74;
            border-radius: 12px; background: var(--block-background-fill);}
 #aqi-progress {min-height: 140px !important;}
+#aqi-rag-actions {gap: 10px; justify-content: flex-start;}
+.aqi-rag-button {width: 132px !important; min-width: 132px !important;
+                 max-width: 132px !important; flex: 0 0 132px !important;
+                 min-height: 40px !important; padding: 8px 16px !important;}
+#aqi-rag-panel {box-sizing: border-box; width: 100%; max-width: 1100px;
+                padding: 24px; margin: 4px auto 20px; align-self: center; gap: 16px;
+                border: 1px solid var(--border-color-primary);
+                border-radius: 14px; background: var(--block-background-fill);}
+#aqi-rag-description {color: var(--body-text-color-subdued);}
+#aqi-rag-result {padding: 18px; gap: 10px; border-radius: 10px;
+                 border: 1px solid var(--border-color-primary);
+                 background: var(--background-fill-primary);}
+#aqi-rag-answer {line-height: 1.8; overflow-wrap: anywhere;}
+#aqi-rag-sources textarea {max-height: 280px; overflow-y: auto;}
+@media (max-width: 600px) {
+    #aqi-rag-panel {padding: 16px;}
+    #aqi-rag-result {padding: 12px;}
+}
 """
 
 
@@ -247,6 +176,35 @@ def build_prediction_figures(
     return figures, summary, note
 
 
+def build_rag_panel():
+    """建立預設隱藏的查詢區與共用提交事件。"""
+    import gradio as gr
+    from rag_query import query_knowledge_base
+
+    with gr.Column(visible=False, elem_id="aqi-rag-panel") as panel:
+        gr.Markdown("### AQI 知識庫查詢")
+        gr.Markdown("查詢每日／每月評估摘要，涵蓋所有測站。每次提問獨立回答，"
+                    "不套用圖表的測站與提前小時篩選。", elem_id="aqi-rag-description")
+        question = gr.Textbox(label="你的問題", placeholder="例如：2026 年 8 月的平均實際與預測 AQI 差多少？",
+                              lines=3, max_lines=6)
+        with gr.Row(elem_id="aqi-rag-actions"):
+            submit = gr.Button("送出查詢", variant="primary", size="sm", scale=0,
+                               min_width=132, elem_classes=["aqi-rag-button"])
+        with gr.Column(elem_id="aqi-rag-result"):
+            gr.Markdown("#### 查詢結果")
+            answer = gr.Markdown("輸入問題後，按「送出查詢」查看結果。", elem_id="aqi-rag-answer")
+        with gr.Accordion("查看參考摘要", open=False):
+            sources = gr.Textbox(label="本次檢索依據", lines=8, max_lines=12,
+                                 interactive=False, elem_id="aqi-rag-sources")
+    gr.on(
+        triggers=[submit.click, question.submit], fn=query_knowledge_base,
+        inputs=question, outputs=[answer, sources],
+        concurrency_limit=1, concurrency_id="aqi-rag", trigger_mode="once",
+        show_progress="full", show_progress_on=[answer],
+    )
+    return panel
+
+
 def build_prediction_app(
     datasets: dict[str, pd.DataFrame],
     station: str = "木柵站",
@@ -266,7 +224,7 @@ def build_prediction_app(
     # Gradio 6 的 CSS 移至 launch；Gradio 5 則在 Blocks 設定。
     style_options = {} if "css" in inspect.signature(gr.Blocks.launch).parameters else {"css": DASHBOARD_CSS}
     with gr.Blocks(title=f"{station} AQI 預測比較", analytics_enabled=False, **style_options) as app:
-        gr.Markdown(f"# {station} AQI 預測比較\n按下按鈕切換圖表，每次呈現一張。")
+        gr.Markdown(f"# {station} AQI 預測比較\n按下功能按鈕切換圖表、評估或 RAG 查詢。")
         gr.Markdown(f"8h 模型採用 **h{horizon}（提前 {horizon} 小時）** 的預測；趨勢圖可縮放與拖曳時間軸。")
         if update_callback is not None:
             gr.Markdown("歷史曲線使用指定 h；綠色虛線為最新觀測基準的未來 h1～h8，不納入誤差評估。")
@@ -284,23 +242,29 @@ def build_prediction_app(
                                    variant="primary" if key == initial_view else "secondary")
                     for key, label in VIEW_LABELS.items()
                 }
-            if len(datasets) < 2:
-                gr.Markdown("目前只載入一個模型；以 `--source both` 啟動可比較兩個模型。")
-            plot = gr.Plot(value=figures[initial_view], show_label=False)
-            with gr.Column(visible=False) as details:
-                note_component = gr.Markdown(note)
-                table = gr.Dataframe(value=summary, interactive=False, label="評估明細")
+                buttons["rag"] = gr.Button("RAG 查詢", variant="secondary")
+            with gr.Column() as chart_content:
+                if len(datasets) < 2:
+                    gr.Markdown("目前只載入一個模型；以 `--source both` 啟動可比較兩個模型。")
+                plot = gr.Plot(value=figures[initial_view], show_label=False)
+                with gr.Column(visible=False) as details:
+                    note_component = gr.Markdown(note)
+                    table = gr.Dataframe(value=summary, interactive=False, label="評估明細")
+            rag_panel = build_rag_panel()
+
+        view_outputs = [plot, details, *buttons.values(), chart_content, rag_panel]
 
         def select_view(view):
             return (
-                figures[view], gr.update(visible=view == "metrics"),
+                gr.skip() if view == "rag" else figures[view], gr.update(visible=view == "metrics"),
                 *[gr.update(variant="primary" if key == view else "secondary") for key in buttons],
+                gr.update(visible=view != "rag"), gr.update(visible=view == "rag"),
             )
 
         for key, button in buttons.items():
-            if key in figures:
+            if key in figures or key == "rag":
                 button.click(partial(select_view, key), inputs=None,
-                             outputs=[plot, details, *buttons.values()],
+                             outputs=view_outputs,
                              queue=False, api_name=f"view_{key}")
         if update_callback is not None:
             def refresh_data(progress=gr.Progress()):
@@ -347,7 +311,7 @@ def build_prediction_app(
                     message = (f"更新未完成（{type(exc).__name__}）。\n\n"
                                f"**失敗步驟：{stage}**\n\n**原因：** {reason}\n\n保留目前圖表；"
                                "已成功寫入的批次會保留，可再次按更新重試。")
-                    return (*[gr.skip() for _ in range(2 + len(buttons) + 2)], message)
+                    return (*[gr.skip() for _ in range(len(view_outputs) + 2)], message)
 
             def begin_update():
                 return (gr.update(value="更新中…", interactive=False),
@@ -361,7 +325,7 @@ def build_prediction_app(
             refresh.click(begin_update, inputs=None, outputs=lifecycle_outputs,
                           queue=False, show_progress="hidden", api_name=False).then(
                           refresh_data, inputs=None,
-                          outputs=[plot, details, *buttons.values(), note_component, table, status],
+                          outputs=[*view_outputs, note_component, table, status],
                           concurrency_limit=1, concurrency_id="aqi-update", trigger_mode="once",
                           show_progress="full", show_progress_on=[busy_progress],
                           api_name=False).then(finish_update, inputs=None, outputs=lifecycle_outputs,
@@ -395,3 +359,51 @@ def show_prediction_visualization(
     style_options = {"css": DASHBOARD_CSS} if "css" in inspect.signature(app.launch).parameters else {}
     app.launch(server_name="127.0.0.1", server_port=server_port,
                inbrowser=inbrowser, share=False, **style_options)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", choices=["both", "8h", "single"], default="both",
+                        help="both：同時比較兩種模型（預設）；8h：多步模型；single：單步模型")
+    parser.add_argument("--horizon", type=int, choices=range(1, 9), default=1,
+                        help="8h 模型的提前小時，預設 h1，每個目標時間只取一筆")
+    parser.add_argument(
+        "--station",
+        default="木柵站",
+        help="資料庫中的測站名稱，預設為木柵站",
+    )
+    parser.add_argument(
+        "--window-days",
+        type=int,
+        default=7,
+        help="圖表初始顯示最後幾天，預設為 7 天",
+    )
+    parser.add_argument("--port", type=int, default=None, help="Gradio 連接埠，預設自動尋找可用埠（由 7860 起）")
+    parser.add_argument("--no-browser", action="store_true", help="啟動服務但不自動開啟瀏覽器")
+    return parser
+
+
+def launch_dashboard(args, update_callback=None) -> int:
+    """使用已解析的設定啟動，供 main.py 共用，避免重複解析命令列。"""
+    show_prediction_visualization(
+        station=args.station,
+        initial_window_days=args.window_days,
+        source=args.source,
+        horizon=args.horizon,
+        server_port=args.port,
+        inbrowser=not args.no_browser,
+        update_callback=update_callback,
+    )
+    return 0
+
+
+def main(argv=None, update_callback=None) -> int:
+    return launch_dashboard(build_parser().parse_args(argv), update_callback=update_callback)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, SQLAlchemyError) as exc:
+        print(f"錯誤：{exc}", file=sys.stderr)
+        raise SystemExit(1)
