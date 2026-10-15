@@ -76,9 +76,10 @@ def load_settings() -> Settings:
     load_dotenv(Path(__file__).with_name(".env"), override=False)
     return Settings(
         database_url=os.getenv("DATABASE_URL", "postgresql+psycopg://postgres:abc123@localhost:5432/postgres"),
-        ollama_api_key=os.getenv("OLLAMA_API_KEY", ""),
+        ollama_api_key=os.getenv("OLLAMA_API_KEY", "10aeb043e09341759a29c5b8d80b244d.mX_PXdARgdXGtKz1ryRJujVv"),
         llm_base_url=os.getenv("LLM_BASE_URL", os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")),
-        llm_model=os.getenv("LLM_MODEL", os.getenv("OLLAMA_CHAT_MODEL", "gpt-oss:120b-cloud")),
+        # llm_model=os.getenv("LLM_MODEL", os.getenv("OLLAMA_CHAT_MODEL", "gpt-oss:120b-cloud")),
+        llm_model=os.getenv("LLM_MODEL", os.getenv("OLLAMA_CHAT_MODEL", "nemotron-3-super:cloud")),
         embedding_model=os.getenv("EMBEDDING_MODEL", os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")),
         embedding_dim=int(os.getenv("EMBEDDING_DIM", "768")),
         chunk_size=int(os.getenv("CHUNK_SIZE", "500")),
