@@ -179,7 +179,7 @@ def build_prediction_figures(
 def build_rag_panel():
     """建立預設隱藏的查詢區與共用提交事件。"""
     import gradio as gr
-    from rag_query import query_knowledge_base
+    from agent.rag_query import query_knowledge_base
 
     with gr.Column(visible=False, elem_id="aqi-rag-panel") as panel:
         gr.Markdown("### AQI 知識庫查詢")

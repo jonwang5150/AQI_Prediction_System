@@ -3,7 +3,7 @@
 
 安裝：python -m pip install "SQLAlchemy>=2.0,<2.1" "psycopg[binary]>=3,<4"
 設定：修改 config.py 的資料庫連線網址與每批寫入筆數。
-本模組由 crawl_to_db.py 與 predict_2026.py 呼叫，不讀寫中間檔案。
+本模組由 crawl_to_db.py 與 predict_1h.py 呼叫，不讀寫中間檔案。
 
 資料庫須先建立；程式會建立觀測與預測資料表。
 日期保留來源資料的台灣當地時間，不進行時區轉換。

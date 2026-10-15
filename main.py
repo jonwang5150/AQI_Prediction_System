@@ -15,10 +15,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 import crawl_to_db
-import predict_2026
-import predict_2026_8h
-import show_2026_prediction
-from build_knowledge_base import build_knowledge_base
+import predict_1h
+import predict_8h
+from visualization import prediction_visualizations
+from build_pgvector import build_knowledge_base
 from config import settings
 from db_models import AirQualityHourly, AirQualityPrediction, AirQualityPrediction8h
 from prediction_data_process import read_database_observations
@@ -74,9 +74,9 @@ def update_to_latest(station: str, progress=None, now=None) -> str:
             now = now.tz_convert("Asia/Taipei").tz_localize(None)
         cutoff = now.floor("h")
         report(0.02, "載入 v1 模型 checkpoint")
-        single_checkpoint = predict_2026.load_checkpoint(predict_2026.PROJECT_DIR / "aqi_lstm_model.pth")
+        single_checkpoint = predict_1h.load_checkpoint(predict_1h.PROJECT_DIR / "aqi_lstm_model.pth")
         report(0.04, "載入 v2 模型 checkpoint")
-        multi_checkpoint = predict_2026_8h.load_checkpoint(predict_2026_8h.PROJECT_DIR / "aqi_lstm_8h_model.pth")
+        multi_checkpoint = predict_8h.load_checkpoint(predict_8h.PROJECT_DIR / "aqi_lstm_8h_model.pth")
         lookback = max(single_checkpoint[2], multi_checkpoint[2] + multi_checkpoint[3] - 1)
         report(0.06, "讀取資料庫歷史觀測與模型輸入視窗")
         previous, context, starts = load_update_context(station, lookback, cutoff)
@@ -107,13 +107,13 @@ def update_to_latest(station: str, progress=None, now=None) -> str:
         observations = observations.loc[observations["observed_at"] <= latest].copy()
         report(0.50, "執行 v1 單步模型")
         if latest >= starts["single"]:
-            predict_2026.main(data=observations, argv=[
+            predict_1h.main(data=observations, argv=[
                 "--station", station, "--start", str(starts["single"]),
                 "--end", str(latest + pd.Timedelta(hours=1)),
             ])
         report(0.72, "執行 v2 歷史回測與未來 8 小時預測")
         if latest >= starts["8h"]:
-            predict_2026_8h.main(data=observations, argv=[
+            predict_8h.main(data=observations, argv=[
                 "--station", station, "--start", str(starts["8h"]),
                 "--end", str(latest + pd.Timedelta(hours=9)), "--latest-origin", str(latest),
             ])
@@ -129,10 +129,10 @@ def update_to_latest(station: str, progress=None, now=None) -> str:
 
 
 def main(argv=None) -> int:
-    # 使用專案實際檔名 show_2026_prediction.py，維持原有參數及四種圖表。
-    args = show_2026_prediction.build_parser().parse_args(argv)
+    # 使用專案實際檔名 prediction_visualizations.py，維持原有參數及四種圖表。
+    args = prediction_visualizations.build_parser().parse_args(argv)
     print(f"Python 執行環境：{sys.executable}", flush=True)
-    return show_2026_prediction.launch_dashboard(
+    return prediction_visualizations.launch_dashboard(
         args, update_callback=lambda progress: update_to_latest(args.station.strip(), progress))
 
 
