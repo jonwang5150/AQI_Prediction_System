@@ -58,7 +58,7 @@ flowchart TD
 ```text
 DL_AQI/
 ├── main.py                       # Gradio 主入口，串接爬取、預測與刷新
-├── visualizations.py        # 圖表入口與顯示參數
+├── prediction_visualization/ # 預測資料載入、評估與圖表入口
 ├── crawl_to_db.py                 # 網站下載、解析、逐批寫入並回傳合併資料
 ├── update_db.py                   # 共用資料庫連線、欄位解析與交易寫入
 ├── db_models.py                   # 三張資料表的 ORM 定義與 upsert
@@ -90,7 +90,7 @@ DL_AQI/
 └── CODE_WORKFLOW.md               # 舊版下載腳本流程紀錄
 ```
 
-實際圖表檔名是 `visualizations.py`。`CODE_WORKFLOW.md` 中提到的 `search_v2.py`、`serch.py` 不在目前專案中；現行下載入口為 `crawl_to_db.py`，操作以本 README 與目前程式為準。
+實際圖表模組是 `prediction_visualization/visualizations.py`。`CODE_WORKFLOW.md` 中提到的 `search_v2.py`、`serch.py` 不在目前專案中；現行下載入口為 `crawl_to_db.py`，操作以本 README 與目前程式為準。
 
 ### 共用邏輯與維護位置
 
@@ -102,7 +102,7 @@ DL_AQI/
 | 資料庫觀測欄位與時間篩選 | `prediction_data_process.read_database_observations()` |
 | 記憶體資料／檔案／資料庫的來源選擇 | `prediction_data_process.resolve_observation_data()` |
 | 預測區間、逐時時間列、前向補值與標準化 | `prediction_data_process.py` |
-| 圖表啟動參數與 Gradio 入口 | `visualizations.build_parser()`、`launch_dashboard()` |
+| 圖表啟動參數與 Gradio 入口 | `prediction_visualization.visualizations.build_parser()`、`launch_dashboard()` |
 
 `predict_1h.py` 與 `predict_8h.py` 保留各自的序列推論與結果寫入流程，並沿用 `load_checkpoint()`、`load_database_data()`、`main(data=..., argv=...)` 介面。v2 仍要求觀測涵蓋輸入區間首尾；共用補值函式只產生模型輸入，不修改評估用的原始真實值。`main.py` 的增量進度判斷不與一般歷史回測混用。
 
@@ -207,7 +207,7 @@ python main.py --station 木柵站
 
 ### 啟動參數
 
-`main.py` 與 `visualizations.py` 使用相同的顯示參數：
+`main.py` 與 `prediction_visualization/visualizations.py` 使用相同的顯示參數：
 
 | 參數 | 預設 | 說明 |
 |---|---|---|
@@ -220,10 +220,10 @@ python main.py --station 木柵站
 
 ```powershell
 python main.py --station 木柵站 --horizon 8 --window-days 14 --port 7860
-python -m visualizations --source both --no-browser
+python -m prediction_visualization.visualizations --source both --no-browser
 ```
 
-`main.py` 呼叫 `visualizations.py` 啟動 Gradio，並提供更新功能。啟動時只顯示既有預測，不自動爬取或執行模型；單獨執行 `visualizations.py` 則是檢視介面。
+`main.py` 呼叫 `prediction_visualization/visualizations.py` 啟動 Gradio，並提供更新功能。啟動時只顯示既有預測，不自動爬取或執行模型；單獨執行該模組則是檢視介面。
 
 ### 四種圖表
 

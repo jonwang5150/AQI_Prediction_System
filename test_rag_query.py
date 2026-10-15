@@ -99,7 +99,7 @@ class RagQueryTests(unittest.TestCase):
         self.assertIn("MAE：3.2", sources)
 
     def test_dashboard_builds_with_rag_and_existing_charts(self):
-        from visualizations import build_prediction_app
+        from prediction_visualization.visualizations import build_prediction_app
         data = pd.DataFrame({"日期": pd.date_range("2026-10-14", periods=3, freq="h"),
                              "預測AQI": [30, 35, 40], "實際AQI": [31, 34, 42]})
         app = build_prediction_app({"single": data, "8h": data},
