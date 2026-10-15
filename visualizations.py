@@ -4,17 +4,12 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
-
-# Allow direct execution from an IDE or from the visualization directory.
-if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 import pandas as pd
 from sqlalchemy.exc import SQLAlchemyError
-from visualization.load_prediction_data import load_prediction_data
-from visualization.evaluate_prediction_data import evaluate_prediction_data
+from prediction_data_operation.load_prediction_data import load_prediction_data
+from prediction_data_operation.evaluate_prediction_data import evaluate_prediction_data
 
 
 VIEW_LABELS = {
