@@ -505,7 +505,7 @@ python -m pip install odfpy
 - `main.py` 使用根目錄兩個固定檔名的 checkpoint；獨立預測與訓練入口才提供 `--model`。
 - 未提供排程更新、自動重新訓練、登入驗證或正式對外部署設定。
 - checkpoint 載入可能使用 pickle 相容模式，應使用自己訓練或可信任來源的檔案。
-- 目前未提供完整依賴鎖定檔；RAG 查詢與介面整合可用 `python -m unittest test_rag_query -v` 測試。
+- 目前未提供完整依賴鎖定檔；測試集中於 `tests/`。在專案根目錄執行 `python -m unittest discover -s tests -v` 可執行全部測試；RAG 查詢與介面整合可用 `python -m unittest tests.test_rag_query -v` 測試。
 
 修改後可先用以下命令核對介面參數及爬蟲解析：
 
