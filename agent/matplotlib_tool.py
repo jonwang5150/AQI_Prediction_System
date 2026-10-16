@@ -6,11 +6,13 @@ import uuid
 from pathlib import Path
 from textwrap import dedent
 from typing import Optional, Type
-from chat_prompt import build_standard_chat_prompt_template
-from langchain.tools import BaseTool
+from .chat_prompt import build_standard_chat_prompt_template
+from langchain_core.tools import BaseTool
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import Runnable
 from pydantic import BaseModel, Field
+from httpx import HTTPError
+from ollama import ResponseError
 
 
 MATPLOTLIB_TOOL_SYSTEM_PROMPT = dedent("""\
@@ -116,7 +118,7 @@ class MatplotlibTool(BaseTool):
         # build_standard_chat_prompt_template 沿用你原本專案中的函式
         input_ = {
             "system": {"template": MATPLOTLIB_TOOL_SYSTEM_PROMPT},
-            "human": {"template": "{user_query}", "input_variable": ["user_query"]},
+            "human": {"template": "{user_query}", "input_variables": ["user_query"]},
         }
         chat_prompt_template = build_standard_chat_prompt_template(input_)  # noqa: F821
 
@@ -143,9 +145,11 @@ class MatplotlibTool(BaseTool):
 
         try:
             proc = subprocess.run(
-                [sys.executable, str(script_path)],
+                [sys.executable, "-X", "utf8", str(script_path)],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.timeout,
             )
         except subprocess.TimeoutExpired:
@@ -159,6 +163,14 @@ class MatplotlibTool(BaseTool):
 
     # ---------- LangChain 介面 ----------
     def _run(self, query: str) -> str:
+        if not query.strip():
+            return "圖表產生失敗：請提供繪圖需求與資料。"
+        try:
+            return self._generate_chart(query)
+        except (HTTPError, ResponseError, OSError, ValueError):
+            return "圖表產生失敗：請確認模型授權、服務連線與圖檔目錄的寫入權限。"
+
+    def _generate_chart(self, query: str) -> str:
         raw = self.runnable.invoke({"user_query": query})
         code = extract_code(raw)
 

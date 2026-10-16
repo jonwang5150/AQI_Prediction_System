@@ -2,14 +2,19 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import os
+from datetime import datetime, timedelta, timezone
 from textwrap import dedent
 from typing import Any, Literal
-from chat_prompt import build_standard_chat_prompt_template
+from .chat_prompt import build_standard_chat_prompt_template
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import create_engine, func, select
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from langchain_core.exceptions import OutputParserException
+from httpx import HTTPError
+from ollama import ResponseError
+from sqlalchemy import DateTime, create_engine, func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from config import settings
@@ -95,7 +100,20 @@ def build_select(spec: QuerySpec):
                 raise ValueError('空值請使用 is_null 或 not_null')
             operator = {'eq': '__eq__', 'ne': '__ne__', 'gt': '__gt__',
                         'ge': '__ge__', 'lt': '__lt__', 'le': '__le__'}[condition.operator]
-            expression = getattr(field, operator)(condition.value)
+            value = condition.value
+            if field.name == 'station' and value in ('木柵', '木柵站', '木柵觀測站'):
+                value = '木柵站'
+            if isinstance(field.type, DateTime):
+                if not isinstance(value, str):
+                    raise ValueError('日期條件必須使用 ISO 日期或時間字串')
+                value = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                taipei = timezone(timedelta(hours=8))
+                if field.type.timezone:
+                    if value.tzinfo is None:
+                        value = value.replace(tzinfo=taipei)
+                elif value.tzinfo is not None:
+                    value = value.astimezone(taipei).replace(tzinfo=None)
+            expression = getattr(field, operator)(value)
         statement = statement.where(expression)
     if groups:
         statement = statement.group_by(*groups)
@@ -137,10 +155,20 @@ def execute_plan(engine, plan: QueryPlan) -> dict:
 
 
 SQL_TOOL_SYSTEM_PROMPT = '''你是 AQI 唯讀 SQL agent，將問題轉成 QueryPlan。
+服務僅限木柵觀測站，未指定地點時預設木柵。資料庫測站名稱是「木柵站」，每個查詢必須包含 station eq 木柵站 的 filters 條件。
+明確要求其他測站、全台或跨地區比較時，填 refusal 說明僅提供木柵資料，queries 保持空白。
+必須呼叫 QueryPlan 工具提交查詢規格，不能只回覆文字或 SQL。
+table 使用不含 public. 的表名。filters 每項只能使用 column、operator、value；
+metrics 每項只能使用 function、column。禁止使用 field、op、as 等未定義鍵。
+operator 使用 eq/ne/gt/ge/lt/le/is_null/not_null；函式名稱使用小寫。
 只能讀取以下 public 資料表。禁止修改、刪除、新增、建表或存取其他資料。
 若要求寫入、任意 SQL、其他資料表或不支援的運算，填 refusal 並讓 queries 為空。
 只使用提供的欄位；filters 之間為 AND。日期區間使用 ge 起點、lt 終點。
 日期採台灣當地時間。統計必須使用 metrics，不得以截斷明細宣稱完整統計。
+單一日期的每日平均不需要日期截斷或 GROUP BY：篩選當日 00:00（含）至次日 00:00（不含），
+使用 metrics 的 avg(aqi) 與 count(aqi)，columns 與 group_by 都保持空白。單一月份平均同理。
+count(aqi) 是有效 AQI 樣本數；count(*) 是總列數。不能因「每日平均」字樣就拒絕單日聚合。
+只有跨多日且要求按日期分組的查詢，才涉及目前不支援的日期截斷運算。
 metrics 輸出名稱為 function_column，例如 avg_aqi；count(*) 為 count_all。
 每次最多三個單表查詢，支援篩選、排序、分組與 count/avg/min/max/sum。
 不支援跨表 JOIN、任意 SQL 運算式、MAE/RMSE 或每組最新列；這些需求請明確拒絕。
@@ -159,12 +187,14 @@ class SQLInput(StrictModel):
 class SQLTool(BaseTool):
     name: str = "SqlTool"
     description: str = dedent("""\
-一個專門設計用於唯讀查詢 AQI（空氣品質）資料庫的工具。
+一個專門設計用於唯讀查詢木柵觀測站 AQI（空氣品質）資料庫的工具。僅服務木柵，查詢須限定 station 等於木柵站。
+單純的日期／月份摘要問題（例如使用者指定月份的平均 AQI）優先使用 AQIKnowledgeBase。
+本工具用於逐筆資料、自訂篩選或明確要求從原始觀測重新計算的統計，不應與已足夠的摘要重複查詢。
 
 當出現以下情況時應使用此工具：
-- 使用者詢問 AQI 實際觀測數據
+- 使用者詢問逐筆 AQI 實際觀測、特定測站或最新紀錄
 - 使用者詢問單步預測或 8 小時預測結果
-- 需要對上述資料做篩選、排序、分組或基本統計
+- 需要對上述原始資料做自訂篩選、排序、分組或明確要求完整原始觀測的基本統計
 
 此工具負責：
 - 將問題轉換為結構化查詢規格，並以唯讀方式查詢資料庫
@@ -186,14 +216,24 @@ class SQLTool(BaseTool):
 
     @classmethod
     def create(cls, llm: Runnable, *, engine=None):
-        input_ = {"system": {"template": SQL_TOOL_SYSTEM_PROMPT},
+        example = QueryPlan(queries=[QuerySpec(
+            table='air_quality_hourly',
+            filters=[Filter(column='station', operator='eq', value='木柵站')],
+            metrics=[Metric(function='avg', column='aqi')],
+        )]).model_dump_json()
+        input_ = {"system": {
+                    "template": SQL_TOOL_SYSTEM_PROMPT + '\n完整 QueryPlan JSON Schema：\n{plan_schema}'
+                                '\n無日期限制的格式範例；實際查詢必須依使用者指定的年月加入對應日期篩選：\n{plan_example}',
+                    "partial_variables": {"plan_schema": json.dumps(QueryPlan.model_json_schema(), ensure_ascii=False),
+                                          "plan_example": example}},
                   "human": {"template": "{user_query}",
-                            "input_variable": ["user_query"]}}
+                            "input_variables": ["user_query"]}}
 
         # build_standard_chat_prompt_template 沿用專案中既有的函式（需自行 import）
         chat_prompt_template = build_standard_chat_prompt_template(input_)
 
-        pipeline = chat_prompt_template | llm.with_structured_output(QueryPlan)
+        # Cloud supports tool calling, but not Ollama's native JSON-schema format.
+        pipeline = chat_prompt_template | llm.with_structured_output(QueryPlan, method="function_calling")
 
         if engine is None:
             # 可指定只授予三張表 SELECT 的帳號；此模組不修改資料庫權限。
@@ -205,14 +245,35 @@ class SQLTool(BaseTool):
     def _run(self, query: str):
         if not query.strip():
             return json.dumps({'error': '請輸入查詢問題'}, ensure_ascii=False)
+        stage = 'plan'
         try:
-            raw = self.runnable.invoke({"user_query": query})
-            plan = QueryPlan.model_validate(raw.model_dump() if isinstance(raw, QueryPlan) else raw)
+            # Repair malformed model output once, without weakening validation.
+            for attempt in range(2):
+                try:
+                    prompt = query if attempt == 0 else (
+                        query + '\n上次輸出未符合 QueryPlan。請依系統提供的完整 schema 與範例重建，'
+                        '呼叫 QueryPlan；table 不加 public.，使用 column/operator/value 與 function/column。'
+                    )
+                    raw = self.runnable.invoke({"user_query": prompt})
+                    plan = QueryPlan.model_validate(raw.model_dump() if isinstance(raw, QueryPlan) else raw)
+                    break
+                except (ValidationError, OutputParserException):
+                    if attempt == 1:
+                        raise
+            stage = 'execute'
             result = execute_plan(self.engine, plan)
-        except (ValueError, SQLAlchemyError):
-            # 不將可能含帳密、SQL 參數的底層例外傳給模型或使用者。
-            result = {'error': '查詢規格不允許或資料庫查詢失敗，請確認條件與唯讀連線設定。'}
+        except (HTTPError, ResponseError, ConnectionError):
+            result = {'error': 'SQL 子模型服務或授權失敗，請停止重試並檢查模型連線設定。',
+                      'error_code': 'model_service_error', 'retryable': False}
+        except SQLAlchemyError:
+            result = {'error': '資料庫連線或查詢執行失敗，請停止重試並檢查資料庫設定。',
+                      'error_code': 'database_error', 'retryable': False}
+        except ValueError:
+            result = {'error': ('SQL 子模型未產生有效 QueryPlan，已修正重試一次仍失敗，請停止重試。'
+                                if stage == 'plan' else '查詢不符合支援的欄位或運算規則。'),
+                      'error_code': 'invalid_query_plan' if stage == 'plan' else 'unsupported_query',
+                      'retryable': False}
         return json.dumps(result, ensure_ascii=False, default=str)
 
-    def _arun(self, query: str):
-        raise NotImplementedError("This tool does not support async")
+    async def _arun(self, query: str):
+        return await asyncio.to_thread(self._run, query)

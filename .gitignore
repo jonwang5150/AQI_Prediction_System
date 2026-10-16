@@ -4,4 +4,4 @@ __pycache__/
 *.pyd
 .venv-rag/
 .env
-config.py
+

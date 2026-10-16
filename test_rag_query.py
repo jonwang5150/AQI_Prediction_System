@@ -84,7 +84,7 @@ class RagQueryTests(unittest.TestCase):
         self.assertIn("3.2 [1]", answer)
         self.assertIn("2026-10-14", sources)
         self.assertEqual(store.return_value.similarity_search.call_args.kwargs["filter"],
-                         {"source": {"$in": rag_tool.SUMMARY_SOURCES}})
+                         {"$and": [{"station": "木柵站"}, {"source": {"$in": rag_tool.SUMMARY_SOURCES}}]})
         self.assertIn("MAE：3.2", runnable.invoke.call_args.args[0]["sources"])
 
     @patch("agent.rag_tool._vector_store")

@@ -11,6 +11,8 @@ from langchain_postgres import PGVector
 
 from config import settings
 
+SUMMARY_STATION = "木柵站"
+
 
 MONTHLY_QUERY = """
 WITH ranked_predictions AS (
@@ -23,7 +25,9 @@ WITH ranked_predictions AS (
             ORDER BY created_at DESC, horizon_hours ASC, model_version ASC
         ) AS prediction_rank
     FROM air_quality_predictions_8h
-    WHERE target_at >= DATE '2026-01-01'
+    WHERE station = :station
+      AND target_at >= DATE '2026-01-01'
+      AND target_at < DATE '2027-01-01'
 ),
 paired AS (
     SELECT
@@ -38,6 +42,7 @@ paired AS (
        AND p.prediction_rank = 1
     WHERE a.aqi IS NOT NULL
       AND p.predicted_aqi IS NOT NULL
+      AND a.station = :station
       AND a.observed_at >= DATE '2026-01-01'
       AND a.observed_at < DATE '2027-01-01'
 )
@@ -66,7 +71,9 @@ WITH ranked_predictions AS (
             ORDER BY created_at DESC, horizon_hours ASC, model_version ASC
         ) AS prediction_rank
     FROM air_quality_predictions_8h
-    WHERE target_at >= DATE '2026-01-01'
+    WHERE station = :station
+      AND target_at >= DATE '2026-01-01'
+      AND target_at < DATE '2027-01-01'
 ),
 paired AS (
     SELECT
@@ -81,7 +88,9 @@ paired AS (
        AND p.prediction_rank = 1
     WHERE a.aqi IS NOT NULL
       AND p.predicted_aqi IS NOT NULL
+      AND a.station = :station
       AND a.observed_at >= DATE '2026-01-01'
+      AND a.observed_at < DATE '2027-01-01'
 ),
 daily_changes AS (
     SELECT
@@ -128,7 +137,9 @@ observations AS (
            MIN(aqi) OVER (PARTITION BY DATE(observed_at)) AS min_aqi
     FROM air_quality_hourly
     WHERE aqi IS NOT NULL
+      AND station = :station
       AND observed_at >= DATE '2026-01-01'
+      AND observed_at < DATE '2027-01-01'
 ),
 daily_extremes AS (
     SELECT DATE(observed_at) AS date,
@@ -158,7 +169,9 @@ def _build_monthly_documents(rows) -> list[Document]:
     documents = []
     for row in rows:
         content = f"""
+測站：{SUMMARY_STATION}
 月份：{row['month']}
+統計口徑：木柵站有效預測配對樣本
 平均實際 AQI：{row['avg_actual']}
 平均預測 AQI：{row['avg_predicted']}
 平均絕對誤差（MAE）：{row['mae']}
@@ -169,6 +182,7 @@ def _build_monthly_documents(rows) -> list[Document]:
         documents.append(Document(
             page_content=content,
             metadata={
+                "station": SUMMARY_STATION,
                 "source": "aqi_prediction_monthly_evaluation",
                 "prediction_table": "air_quality_predictions_8h",
                 "prediction_selection": "latest_created_at",
@@ -195,8 +209,9 @@ def _build_daily_documents(rows) -> list[Document]:
             return "；".join(f"{item['station']} {item['observed_at']}" for item in row[name])
 
         content = f"""
+測站：{SUMMARY_STATION}
 日期：{row['date']}
-實際極值範圍：當日所有測站的有效觀測，不限是否有預測配對
+實際極值範圍：木柵站當日的有效觀測，不限是否有預測配對
 當日實際 AQI 最高值：{row['max_actual_aqi']}
 最高值測站與時間（含並列）：{occurrences('max_occurrences')}
 當日實際 AQI 最低值：{row['min_actual_aqi']}
@@ -218,10 +233,13 @@ def _build_daily_documents(rows) -> list[Document]:
         documents.append(Document(
             page_content=content,
             metadata={
+                "station": SUMMARY_STATION,
                 "source": "aqi_prediction_daily_evaluation",
                 "prediction_table": "air_quality_predictions_8h",
                 "prediction_selection": "latest_created_at",
                 "type": "daily_summary",
+                "avg_actual": float(row["avg_actual"]) if row["avg_actual"] is not None else None,
+                "avg_predicted": float(row["avg_predicted"]) if row["avg_predicted"] is not None else None,
                 "date": str(row["date"]),
                 "year": row["date"].year,
                 "month": row["date"].month,
@@ -234,7 +252,7 @@ def _build_daily_documents(rows) -> list[Document]:
                 "min_occurrences": row["min_occurrences"],
                 "observation_count": int(row["observation_count"]),
                 "observation_last_at": str(row["observation_last_at"]),
-                "extrema_scope": "all_stations_observations",
+                "extrema_scope": "station_observations",
                 "sample_count": int(row["sample_count"]),
                 "opposite_ratio": opposite_ratio,
             },
@@ -246,7 +264,7 @@ def _document_id(document: Document) -> str:
     """為同一份統計文件產生固定 ID，重建時更新而不重複新增。"""
     metadata = document.metadata
     period = metadata.get("date", metadata.get("month", ""))
-    key = f"{metadata['source']}:{period}"
+    key = f"{metadata['source']}:{metadata['station']}:{period}"
     return str(uuid5(NAMESPACE_URL, key))
 
 
@@ -262,10 +280,10 @@ def build_knowledge_base(
     database = SQLDatabase.from_uri(connection)
 
     monthly_rows = database.run(
-        MONTHLY_QUERY, fetch="cursor"
+        MONTHLY_QUERY, fetch="cursor", parameters={"station": SUMMARY_STATION}
     ).mappings().all()
     daily_rows = database.run(
-        DAILY_QUERY, fetch="cursor"
+        DAILY_QUERY, fetch="cursor", parameters={"station": SUMMARY_STATION}
     ).mappings().all()
     documents = (
         _build_monthly_documents(monthly_rows)
@@ -278,6 +296,7 @@ def build_knowledge_base(
     embeddings = OllamaEmbeddings(
         model=embedding_model or settings.ollama_embedding_model,
         base_url=ollama_base_url or settings.ollama_base_url,
+        client_kwargs={"timeout": 120.0},
     )
     vector_store = PGVector(
         embeddings=embeddings,

@@ -179,7 +179,11 @@ class WeatherForecastTool(BaseTool):
             )
             response.raise_for_status()
             payload = response.json()
-            if not isinstance(payload, dict) or payload.get("error"):
+            if (not isinstance(payload, dict) or payload.get("error")
+                    or not isinstance(payload.get("current"), dict)
+                    or not isinstance(payload.get("daily"), dict)
+                    or not payload["current"].get("time")
+                    or not payload["daily"].get("time")):
                 raise ValueError("unexpected weather API response")
             result = _format_forecast(payload)
         except (requests.RequestException, OSError, ValueError, TypeError) as exc:
