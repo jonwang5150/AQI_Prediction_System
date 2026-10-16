@@ -105,10 +105,11 @@ class RagQueryTests(unittest.TestCase):
         app = build_prediction_app({"single": data, "8h": data},
                                    update_callback=lambda progress: "完成", reload_callback=lambda: {})
         values = [item.get("props", {}).get("value") for item in app.config["components"]]
-        self.assertIn("RAG 查詢", values)
-        self.assertIn("送出查詢", values)
+        self.assertIn("智能助理", values)
+        self.assertIn("送出訊息", values)
+        self.assertIn("清除對話", values)
         self.assertIn("更新至最新", values)
-        self.assertTrue(any(getattr(fn.fn, "func", None) == rag_tool.query_knowledge_base
+        self.assertTrue(any(getattr(fn.fn, "__name__", None) == 'respond'
                             for fn in app.fns.values()))
         views = {fn.fn.args[0]: fn for fn in app.fns.values()
                  if getattr(fn.fn, "args", ()) and getattr(fn.fn.func, "__name__", "") == "select_view"}

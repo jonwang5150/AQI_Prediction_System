@@ -1,4 +1,7 @@
 import sys
+import json
+import logging
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,6 +18,9 @@ from agent.sql_tool import SQLTool
 from agent.matplotlib_tool import MatplotlibTool
 from agent.rag_tool import KnowledgeBaseTool
 from agent.weather_tool import WeatherForecastTool
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+CHART_DIRECTORY = Path(__file__).resolve().parents[1] / "charts"
 
 AGENT_SYSTEM_PROMPT = dedent("""\
 你是木柵地區 AQI 資料分析助理，負責理解需求、選擇工具、核對證據並以繁體中文回答。
@@ -162,7 +168,7 @@ tools = [
     WeatherForecastTool(),
     KnowledgeBaseTool.create(rag_model),
     SQLTool.create(sql_model),
-    MatplotlibTool.create(matplotlib_model),
+    MatplotlibTool.create(matplotlib_model, output_dir=CHART_DIRECTORY),
 ]
 
 
@@ -175,6 +181,54 @@ agent = create_agent(
                 ToolCallLimitMiddleware(tool_name="SqlTool", run_limit=2, exit_behavior="continue")],
     name = "aqi_agent"
 )
+
+def chat_with_agent(question: str, history=None, *, runner=None) -> dict:
+    """供網頁呼叫；history 由各使用者的 session 保存，不使用全域對話記憶。"""
+    previous = list(history or [])
+    question = (question or '').strip()
+    if not question or len(question) > 4000:
+        return {'answer': '請輸入 1～4,000 字的問題。', 'history': previous,
+                'charts': [], 'references': '', 'ok': False}
+    try:
+        result = (runner or agent).invoke(
+            {'messages': [*previous, HumanMessage(content=question)]},
+            config={'recursion_limit': 30},
+        )
+        messages = result['messages']
+        current = messages[len(previous) + 1:]
+        final = next((message for message in reversed(current)
+                      if isinstance(message, AIMessage) and not message.tool_calls), None)
+        answer = final.text if final is not None else '本次未產生完整回答，請重新提問。'
+        charts, references = [], []
+        for message in current:
+            if not isinstance(message, ToolMessage) or not isinstance(message.content, str):
+                continue
+            if message.name == 'MatplotlibTool':
+                match = re.match(r'圖表已產生，檔案路徑：([^\r\n]+)', message.content)
+                if match:
+                    path = Path(match[1].strip()).resolve()
+                    if (path.is_relative_to(CHART_DIRECTORY.resolve())
+                            and path.suffix.lower() == '.png' and path.is_file()
+                            and str(path) not in charts):
+                        charts.append(str(path))
+            elif message.name == 'AQIKnowledgeBase':
+                try:
+                    payload = json.loads(message.content)
+                    if isinstance(payload, dict) and isinstance(payload.get('references'), str):
+                        references.append(payload['references'])
+                except (ValueError, TypeError):
+                    pass
+        return {'answer': answer, 'history': messages, 'charts': charts,
+                'references': '\n\n---\n\n'.join(references), 'ok': final is not None}
+    except Exception as exc:
+        logging.getLogger(__name__).error('Agent 對話失敗 (%s)', type(exc).__name__)
+        status = getattr(exc, 'status_code', None)
+        if status in (401, 403):
+            answer = '模型服務授權失敗，請確認 Ollama API 金鑰後再試。'
+        else:
+            answer = '本次對話未完成，請確認模型與資料服務可用後再試；先前對話已保留。'
+        return {'answer': answer, 'history': previous, 'charts': [], 'references': '', 'ok': False}
+
 
 content = dedent("""\
 

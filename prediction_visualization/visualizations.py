@@ -43,6 +43,15 @@ DASHBOARD_CSS = """
                  background: var(--background-fill-primary);}
 #aqi-rag-answer {line-height: 1.8; overflow-wrap: anywhere;}
 #aqi-rag-sources textarea {max-height: 280px; overflow-y: auto;}
+#aqi-rag-panel.aqi-agent-wide {max-width: none; width: 100%; align-self: stretch;}
+#aqi-agent-layout {align-items: flex-start; gap: 20px;}
+#aqi-agent-chat {height: clamp(280px, 43vh, 460px) !important;}
+#aqi-agent-gallery {height: clamp(360px, 65vh, 720px) !important;}
+@media (max-width: 900px) {
+    #aqi-agent-layout {flex-direction: column;}
+    #aqi-agent-layout > div {width: 100%; min-width: 0 !important;}
+    #aqi-agent-gallery {height: 420px !important;}
+}
 @media (max-width: 600px) {
     #aqi-rag-panel {padding: 16px;}
     #aqi-rag-result {padding: 12px;}
@@ -173,48 +182,86 @@ def build_prediction_figures(
     return figures, summary, note
 
 
-def build_rag_panel():
-    """建立預設隱藏的查詢區與共用提交事件。"""
-    from functools import partial
-
+def build_agent_panel():
+    """以 session State 保存 agent 訊息，顯示最終回答與已產生的圖表。"""
+    import inspect
     import gradio as gr
-    from langchain_ollama import ChatOllama
 
-    from agent.rag_tool import KnowledgeBaseTool, query_knowledge_base
-    from config import settings
-
-    headers = ({"Authorization": f"Bearer {settings.ollama_api_key}"}
-               if settings.ollama_api_key else {})
-    rag_model = ChatOllama(
-        model=settings.ollama_chat_model,
-        base_url=settings.ollama_base_url,
-        temperature=0,
-        client_kwargs={"headers": headers, "timeout": 120.0},
-    )
-    rag_tool = KnowledgeBaseTool.create(rag_model)
-    rag_query = partial(query_knowledge_base, runnable=rag_tool.runnable)
+    def respond(question, display_history, agent_history):
+        from agent.agent import chat_with_agent
+        display_history = list(display_history or [])
+        if not question or not question.strip():
+            yield (gr.skip(), display_history, agent_history, gr.skip(), gr.skip(),
+                   gr.update(interactive=True), gr.update(interactive=True), gr.skip(), gr.skip(), gr.skip())
+            return
+        display_history.append({'role': 'user', 'content': question.strip()})
+        yield (gr.update(value='', interactive=False), display_history, agent_history, gr.skip(), '',
+               gr.update(interactive=False), gr.update(interactive=False), gr.skip(), gr.skip(), gr.skip())
+        result = chat_with_agent(question, agent_history)
+        display_history.append({'role': 'assistant', 'content': result['answer']})
+        has_charts = bool(result['charts'])
+        yield (gr.update(value='', interactive=True), display_history, result['history'],
+               result['charts'] if has_charts else gr.skip(), result['references'],
+               gr.update(interactive=True), gr.update(interactive=True),
+               gr.update(visible=True) if has_charts else gr.skip(),
+               gr.update(elem_classes=['aqi-agent-wide']) if has_charts else gr.skip(),
+               gr.update(visible=True) if has_charts else gr.skip())
 
     with gr.Column(visible=False, elem_id="aqi-rag-panel") as panel:
-        gr.Markdown("### AQI 知識庫查詢")
-        gr.Markdown("查詢每日／每月評估摘要，涵蓋所有測站。每次提問獨立回答，"
-                    "不套用圖表的測站與提前小時篩選。", elem_id="aqi-rag-description")
-        question = gr.Textbox(label="你的問題", placeholder="例如：2026 年 8 月的平均實際與預測 AQI 差多少？",
-                              lines=3, max_lines=6)
-        with gr.Row(elem_id="aqi-rag-actions"):
-            submit = gr.Button("送出查詢", variant="primary", size="sm", scale=0,
-                               min_width=132, elem_classes=["aqi-rag-button"])
-        with gr.Column(elem_id="aqi-rag-result"):
-            gr.Markdown("#### 查詢結果")
-            answer = gr.Markdown("輸入問題後，按「送出查詢」查看結果。", elem_id="aqi-rag-answer")
-        with gr.Accordion("查看參考摘要", open=False):
-            sources = gr.Textbox(label="本次檢索依據", lines=8, max_lines=12,
-                                 interactive=False, elem_id="aqi-rag-sources")
+        gr.Markdown("### 木柵 AQI 智能助理")
+        gr.Markdown(
+            "查詢木柵觀測站的 AQI、歷史預測表現與木柵天氣，也能把資料畫成圖。"
+            "可接續追問，助理會沿用本次對話中已確認的條件。",
+            elem_id="aqi-rag-description")
+        with gr.Accordion("可以問什麼？", open=False):
+            gr.Markdown(
+                "- **日期／月份摘要**：查詢 2026 年每日或每月的平均 AQI、MAE、RMSE、Bias。\n"
+                "- **原始觀測與預測**：查詢資料庫已有的木柵逐時資料；8h 預測需指定提前小時與模型版本。\n"
+                "- **資料繪圖**：將某月每日平均 AQI 畫成趨勢圖，或依你提供的數據製圖。\n"
+                "- **木柵天氣**：查目前天氣及今天起最多 7 天的預報。\n\n"
+                "服務僅限木柵；評估摘要的平均採有效預測配對樣本，可能與全部觀測平均不同。"
+                "助理不會自動套用上方圖表的時間範圍、提前小時或模型版本，請在問題中說明。")
+        chatbot_options = {'type': 'messages'} if 'type' in inspect.signature(gr.Chatbot).parameters else {}
+        with gr.Row(elem_id="aqi-agent-layout"):
+            with gr.Column(scale=5, min_width=320):
+                chatbot = gr.Chatbot(label="對話", height=400, elem_id="aqi-agent-chat", **chatbot_options)
+                agent_state = gr.State([])
+                question = gr.Textbox(label="你的問題", placeholder="輸入日期、月份或繪圖需求；可接續上一則回答追問。",
+                                      lines=2, max_lines=4)
+                with gr.Row(elem_id="aqi-rag-actions"):
+                    submit = gr.Button("送出訊息", variant="primary", size="sm", scale=0,
+                                       min_width=132, elem_classes=["aqi-rag-button"])
+                    clear = gr.Button("清除對話", size="sm", scale=0, elem_classes=["aqi-rag-button"])
+                    show_chart = gr.Button("查看圖表", size="sm", scale=0, visible=False,
+                                           elem_classes=["aqi-rag-button"])
+                with gr.Accordion("提問範例", open=False):
+                    gr.Examples(examples=[
+                        ["2026/4/9 的平均 AQI 是多少？"],
+                        ["比較 2026 年 5 月與 6 月的預測 MAE。"],
+                        ["將 2026 年 6 月每日平均 AQI 畫成趨勢圖。"],
+                        ["木柵明天會下雨嗎？"],
+                    ], inputs=question, label="點選範例後即可送出")
+                with gr.Accordion("查看參考摘要", open=False):
+                    sources = gr.Textbox(label="本次檢索依據", lines=8, max_lines=12,
+                                         interactive=False, elem_id="aqi-rag-sources")
+            with gr.Column(scale=7, min_width=360, visible=False, elem_id="aqi-agent-chart-column") as chart_column:
+                gallery = gr.Gallery(label="最近產生的圖表", columns=1, type="filepath", interactive=False,
+                                     object_fit="contain", preview=True, height=580, elem_id="aqi-agent-gallery")
+                hide_chart = gr.Button("收起圖表", size="sm", scale=0)
     gr.on(
-        triggers=[submit.click, question.submit], fn=rag_query,
-        inputs=question, outputs=[answer, sources],
-        concurrency_limit=1, concurrency_id="aqi-rag", trigger_mode="once",
-        show_progress="full", show_progress_on=[answer],
+        triggers=[submit.click, question.submit], fn=respond,
+        inputs=[question, chatbot, agent_state],
+        outputs=[question, chatbot, agent_state, gallery, sources, submit, clear, chart_column, panel, show_chart],
+        concurrency_limit=1, concurrency_id="aqi-agent", trigger_mode="once",
+        show_progress="full", show_progress_on=[chatbot], api_name=False,
     )
+    clear.click(lambda: ('', [], [], [], '', gr.update(visible=False), gr.update(elem_classes=[]), gr.update(visible=False)), inputs=None,
+                outputs=[question, chatbot, agent_state, gallery, sources, chart_column, panel, show_chart],
+                concurrency_limit=1, concurrency_id="aqi-agent", api_name=False)
+    hide_chart.click(lambda: (gr.update(visible=False), gr.update(elem_classes=[])), inputs=None,
+                     outputs=[chart_column, panel], queue=False, api_name=False)
+    show_chart.click(lambda: (gr.update(visible=True), gr.update(elem_classes=['aqi-agent-wide'])), inputs=None,
+                     outputs=[chart_column, panel], queue=False, api_name=False)
     return panel
 
 
@@ -237,7 +284,7 @@ def build_prediction_app(
     # Gradio 6 的 CSS 移至 launch；Gradio 5 則在 Blocks 設定。
     style_options = {} if "css" in inspect.signature(gr.Blocks.launch).parameters else {"css": DASHBOARD_CSS}
     with gr.Blocks(title=f"{station} AQI 預測比較", analytics_enabled=False, **style_options) as app:
-        gr.Markdown(f"# {station} AQI 預測比較\n按下功能按鈕切換圖表、評估或 RAG 查詢。")
+        gr.Markdown(f"# {station} AQI 預測比較\n按下功能按鈕切換圖表、評估或智能助理。")
         gr.Markdown(f"8h 模型採用 **h{horizon}（提前 {horizon} 小時）** 的預測；趨勢圖可縮放與拖曳時間軸。")
         if update_callback is not None:
             gr.Markdown("歷史曲線使用指定 h；綠色虛線為最新觀測基準的未來 h1～h8，不納入誤差評估。")
@@ -255,7 +302,7 @@ def build_prediction_app(
                                    variant="primary" if key == initial_view else "secondary")
                     for key, label in VIEW_LABELS.items()
                 }
-                buttons["rag"] = gr.Button("RAG 查詢", variant="secondary")
+                buttons["rag"] = gr.Button("智能助理", variant="secondary")
             with gr.Column() as chart_content:
                 if len(datasets) < 2:
                     gr.Markdown("目前只載入一個模型；以 `--source both` 啟動可比較兩個模型。")
@@ -263,7 +310,7 @@ def build_prediction_app(
                 with gr.Column(visible=False) as details:
                     note_component = gr.Markdown(note)
                     table = gr.Dataframe(value=summary, interactive=False, label="評估明細")
-            rag_panel = build_rag_panel()
+            rag_panel = build_agent_panel()
 
         view_outputs = [plot, details, *buttons.values(), chart_content, rag_panel]
 
