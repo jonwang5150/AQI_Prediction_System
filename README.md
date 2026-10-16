@@ -34,7 +34,7 @@
 
 ```mermaid
 flowchart TD
-    A[歷史 CSV] --> B[pipeline_v1 / pipeline_v2 訓練]
+    A[資料庫歷史觀測 air_quality_hourly] --> B[pipeline_v1 / pipeline_v2 訓練]
     B --> C[模型 checkpoint 與 scaler]
     D[臺北市 AQI 下載網站] --> E[crawl_to_db.py]
     E --> F[(PostgreSQL 觀測資料)]
@@ -308,7 +308,9 @@ python crawl_to_db.py --stations 木柵站 --start 2026-08-01 --end 2026-08-02 -
 
 ### 資料格式
 
-訓練入口預設讀取根目錄的 `20250101-20251231.csv`，**目前專案未附此檔案**，請自行準備，或使用 `--data` 指定。訓練資料應先篩選為單一測站；訓練清理函式不會替你按測站分組。
+v1 訓練入口從 `config.settings.database_url` 指定的資料庫讀取 `air_quality_hourly`，預設木柵站、2025-01-01 至 2025-12-31（包含結束日全天），可使用 `--station`、`--start`、`--end` 調整，不再使用 `--data`。
+
+v2 訓練入口同樣從資料庫的 `air_quality_hourly` 讀取資料，預設木柵站、2025-01-01 至 2025-12-31（包含結束日全天），使用 `--station`、`--start`、`--end` 調整，不再使用 `--data`。保留 v2 的欄位檢查、重複時間檢查及線性插值流程。
 
 CSV 使用 UTF-8／UTF-8 BOM，欄位範例如下。以下只有格式示意，不足以訓練：
 
@@ -336,8 +338,8 @@ CSV 使用 UTF-8／UTF-8 BOM，欄位範例如下。以下只有格式示意，�
 StandardScaler 只在訓練集擬合；測試集與後續推論使用相同的縮放參數。AQI 輸出維持原始尺度，v2 另保留未標準化的目標欄位。
 
 ```powershell
-python -m pipeline_v1.run_model --data 20250101-20251231.csv --epochs 50 --window-size 24 --no-visualization
-python -m pipeline_v2.run_model_new --data 20250101-20251231.csv --epochs 50 --window-size 24 --forecast-horizon 8
+python -m pipeline_v1.run_model --station 木柵站 --start 2025-01-01 --end 2025-12-31 --epochs 50 --window-size 24 --no-visualization
+python -m pipeline_v2.run_model_new --station 木柵站 --start 2025-01-01 --end 2025-12-31 --epochs 50 --window-size 24 --forecast-horizon 8
 ```
 
 兩者都可使用 `--model` 指定輸出 checkpoint。訓練預設路徑相對於目前工作目錄，因此請從專案根目錄執行，讓 `main.py` 找得到輸出檔案。v1 未加 `--no-visualization` 時會開啟訓練資料的 Plotly 圖表。

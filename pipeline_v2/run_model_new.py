@@ -21,7 +21,9 @@ except ImportError:  # 支援 python pipeline_v2/run_model_new.py
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data", type=Path, default=Path("20250101-20251231.csv"))
+    parser.add_argument("--station", default="木柵站", help="資料庫測站名稱")
+    parser.add_argument("--start", default="2025-01-01", help="訓練資料開始日期（含）")
+    parser.add_argument("--end", default="2025-12-31", help="訓練資料結束日期（含全天）")
     parser.add_argument("--model", type=Path, default=Path("aqi_lstm_8h_model.pth"))
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--window-size", type=int, default=24)
@@ -31,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    data, features = load_and_clean_data_new(args.data)
+    data, features = load_and_clean_data_new(station=args.station, start=args.start, end=args.end)
     datasets = prepare_datasets_new(
         data,
         features,
