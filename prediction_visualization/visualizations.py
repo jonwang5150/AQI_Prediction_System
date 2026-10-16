@@ -10,13 +10,8 @@ import numpy as np
 import pandas as pd
 from sqlalchemy.exc import SQLAlchemyError
 
-if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from prediction_visualization.evaluate_prediction_data import evaluate_prediction_data
-    from prediction_visualization.load_prediction_data import load_prediction_data
-else:
-    from .evaluate_prediction_data import evaluate_prediction_data
-    from .load_prediction_data import load_prediction_data
+from .evaluate_prediction_data import evaluate_prediction_data
+from .load_prediction_data import load_prediction_data
 
 
 VIEW_LABELS = {
