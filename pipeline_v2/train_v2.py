@@ -8,9 +8,9 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 try:
-    from .model_new import MultiHorizonLSTM
+    from .model_v2 import MultiHorizonLSTM
 except ImportError:  # 支援直接執行 pipeline_v2 內的程式
-    from model_new import MultiHorizonLSTM
+    from model_v2 import MultiHorizonLSTM
 
 
 def train_model_new(

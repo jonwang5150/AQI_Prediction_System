@@ -6,17 +6,17 @@ import argparse
 from pathlib import Path
 
 try:
-    from .data_cleaning_new import load_and_clean_data_new
-    from .data_split_new import prepare_datasets_new
-    from .model_new import MultiHorizonLSTM, save_checkpoint_new
-    from .predict_new import predict_next_hours
-    from .train_new import evaluate_model_new, train_model_new
-except ImportError:  # 支援 python pipeline_v2/run_model_new.py
-    from data_cleaning_new import load_and_clean_data_new
-    from data_split_new import prepare_datasets_new
-    from model_new import MultiHorizonLSTM, save_checkpoint_new
-    from predict_new import predict_next_hours
-    from train_new import evaluate_model_new, train_model_new
+    from .data_cleaning_v2 import load_and_clean_data_new
+    from .data_split_v2 import prepare_datasets_new
+    from .model_v2 import MultiHorizonLSTM, save_checkpoint_new
+    from .predict_v2 import predict_next_hours
+    from .train_v2 import evaluate_model_new, train_model_new
+except ImportError:  # 支援 python pipeline_v2/run_model_v2.py
+    from data_cleaning_v2 import load_and_clean_data_new
+    from data_split_v2 import prepare_datasets_new
+    from model_v2 import MultiHorizonLSTM, save_checkpoint_new
+    from predict_v2 import predict_next_hours
+    from train_v2 import evaluate_model_new, train_model_new
 
 
 def build_parser() -> argparse.ArgumentParser:

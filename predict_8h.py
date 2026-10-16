@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from db_models import AirQualityPrediction8h, upsert_prediction_8h_batch
-from pipeline_v2.model_new import MultiHorizonLSTM
+from pipeline_v2.model_v2 import MultiHorizonLSTM
 from update_db import create_database_engine
 from model_checkpoint import load_checkpoint_data, preprocessing_from_checkpoint, restore_model
 from prediction_data_process import (

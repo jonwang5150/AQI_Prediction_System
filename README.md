@@ -80,12 +80,12 @@ DL_AQI/
 │   └── visualization.py          # 訓練資料趨勢與特徵關係圖
 ├── pipeline_v2/
 │   ├── __init__.py
-│   ├── run_model_new.py          # v2 訓練入口
-│   ├── data_cleaning_new.py      # CSV 清理
-│   ├── data_split_new.py         # 多步序列與時間切分
-│   ├── model_new.py              # 多步 LSTM 與 checkpoint 儲存
-│   ├── train_new.py              # 訓練與逐 horizon 評估
-│   └── predict_new.py            # 一次預測未來多小時
+│   ├── run_model_v2.py          # v2 訓練入口
+│   ├── data_cleaning_v2.py      # CSV 清理
+│   ├── data_split_v2.py         # 多步序列與時間切分
+│   ├── model_v2.py              # 多步 LSTM 與 checkpoint 儲存
+│   ├── train_v2.py              # 訓練與逐 horizon 評估
+│   └── predict_v2.py            # 一次預測未來多小時
 ├── README.md                      # 專案操作、更新介面與維護說明
 └── CODE_WORKFLOW.md               # 舊版下載腳本流程紀錄
 ```
@@ -339,7 +339,7 @@ StandardScaler 只在訓練集擬合；測試集與後續推論使用相同的�
 
 ```powershell
 python -m pipeline_v1.run_model --station 木柵站 --start 2025-01-01 --end 2025-12-31 --epochs 50 --window-size 24 --no-visualization
-python -m pipeline_v2.run_model_new --station 木柵站 --start 2025-01-01 --end 2025-12-31 --epochs 50 --window-size 24 --forecast-horizon 8
+python -m pipeline_v2.run_model_v2 --station 木柵站 --start 2025-01-01 --end 2025-12-31 --epochs 50 --window-size 24 --forecast-horizon 8
 ```
 
 兩者都可使用 `--model` 指定輸出 checkpoint。訓練預設路徑相對於目前工作目錄，因此請從專案根目錄執行，讓 `main.py` 找得到輸出檔案。v1 未加 `--no-visualization` 時會開啟訓練資料的 Plotly 圖表。

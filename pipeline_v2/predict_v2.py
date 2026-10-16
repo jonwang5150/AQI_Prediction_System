@@ -7,9 +7,9 @@ import pandas as pd
 import torch
 
 try:
-    from .model_new import MultiHorizonLSTM
+    from .model_v2 import MultiHorizonLSTM
 except ImportError:  # 支援直接執行 pipeline_v2 內的程式
-    from model_new import MultiHorizonLSTM
+    from model_v2 import MultiHorizonLSTM
 
 
 def predict_next_hours(
