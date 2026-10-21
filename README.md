@@ -25,6 +25,8 @@
 - 圖表模組已整理至 `prediction_visualization/`，資料載入、評估與 UI 分開維護。
 - v1、v2 訓練資料來源已由固定 CSV 改為依測站與日期直接查詢 PostgreSQL。
 - v2 模組檔名統一使用 `_v2`，checkpoint 仍為 `aqi_lstm_8h_model.pth`。
+- 訓練日期包含結束日全天；兩個 pipeline 依時間切分資料，僅以訓練集擬合 scaler，並以前段歷史資料銜接測試窗口。
+- v2 將標準化的 AQI 輸入與原尺度標籤分開保存，評估時逐一輸出 h1～h8 的 MAE／RMSE。
 - Gradio 已整合可連續追問的木柵 AQI 智能助理，並能顯示引用摘要與 Agent 產生的圖片。
 - Agent 工具改為外部注入模型；SQL、RAG、Matplotlib 各自使用獨立模型實例，天氣工具完全不綁定模型。
 - 原本的通用搜尋功能已不在目前專案，改為固定木柵座標的 Open-Meteo 天氣工具。
@@ -75,7 +77,7 @@ flowchart TD
 ## 專案結構
 
 ```text
-DL_Presentation/
+DL_AQI/
 ├─ main.py                              # 完整 Gradio 入口：圖表、更新、智能助理
 ├─ config.py                            # .env 載入與共用設定
 ├─ db_models.py                         # SQLAlchemy ORM 與 PostgreSQL upsert
@@ -89,7 +91,20 @@ DL_Presentation/
 ├─ aqi_lstm_model.pth                   # v1 checkpoint
 ├─ aqi_lstm_8h_model.pth                # v2 checkpoint
 ├─ pipeline_v1/                         # v1 清理、切分、模型、訓練與評估
+│  ├─ run_model.py                      # 串接清理、圖表、訓練、評估及存檔
+│  ├─ data_cleaning.py                  # 讀取 DB、排序及污染物線性補值
+│  ├─ data_split.py                     # 時間切分、標準化及單步序列
+│  ├─ model.py                          # LSTMModel 與 checkpoint 儲存
+│  ├─ train.py                          # 訓練及測試集 MAE／RMSE
+│  ├─ predict.py                        # 最新測試窗口的下一小時預測
+│  └─ visualization.py                  # AQI 趨勢及特徵散佈矩陣
 ├─ pipeline_v2/                         # v2 清理、切分、模型、訓練與評估
+│  ├─ run_model_v2.py                   # 串接多步訓練、評估、預測及存檔
+│  ├─ data_cleaning_v2.py               # 讀取 DB、欄位檢查及 AQI／污染物補值
+│  ├─ data_split_v2.py                  # 多步序列及原尺度 AQI 標籤
+│  ├─ model_v2.py                       # MultiHorizonLSTM 與 checkpoint 儲存
+│  ├─ train_v2.py                       # 訓練及逐 horizon MAE／RMSE
+│  └─ predict_v2.py                     # 最新連續窗口的多步預測
 ├─ prediction_visualization/
 │  ├─ load_prediction_data.py           # 載入及挑選最新預測版本
 │  ├─ evaluate_prediction_data.py       # 共同樣本 MAE／RMSE／Bias
@@ -196,7 +211,7 @@ Agent 的模型目前不是由 `.env` 選擇：主 Agent、SQL 與 Matplotlib �
 | `public.langchain_pg_collection` | PGVector 管理 | 向量 collection 資訊 |
 | `public.langchain_pg_embedding` | PGVector 管理 | 文件、metadata 與 embedding |
 
-觀測時間、v1 的 `predicted_at` 及 v2 的 `target_at` 都使用臺灣當地「無時區」時間；v2 的 `created_at` 是帶時區時間。程式中的預測區間一律採 `[start, end)`，包含開始、不包含結束。
+觀測時間、v1 的 `predicted_at` 及 v2 的 `target_at` 都使用臺灣當地「無時區」時間；v2 的 `created_at` 是帶時區時間。`predict_1h.py`、`predict_8h.py` 的目標區間採 `[start, end)`，包含開始、不包含結束；訓練 pipeline 的 `--start`、`--end` 則以日期指定，包含結束日全天。
 
 ## 快速啟動
 
@@ -270,12 +285,39 @@ python crawl_to_db.py --stations 木柵站 --start 2026-08-01 --end 2026-08-02 -
 
 ## 模型訓練
 
-### v1：下一小時 AQI
+兩個 pipeline 都透過 `config.py` 的 `DATABASE_URL`，從 `public.air_quality_hourly` 讀取指定測站與期間的觀測。執行前須先匯入資料；訓練入口不會自行爬取資料，也不接受 `--data` 檔案參數。
 
-- 輸入特徵：`O3, PM2.5, PM10, CO, SO2, NO2`
-- 預設歷史窗口：24 小時
-- 輸出：下一小時 AQI
-- 結構：LSTM hidden size 64，接 32 維全連接層、ReLU 與單一輸出
+### v1／v2 比較
+
+| 項目 | `pipeline_v1` | `pipeline_v2` |
+|---|---|---|
+| 執行入口 | `pipeline_v1.run_model` | `pipeline_v2.run_model_v2` |
+| 模型類別 | `LSTMModel` | `MultiHorizonLSTM` |
+| 輸入特徵順序 | `O3, PM2.5, PM10, CO, SO2, NO2` | `AQI, O3, PM2.5, PM10, CO, SO2, NO2` |
+| 預設輸入序列形狀 | `(N, 24, 6)` | `(N, 24, 7)` |
+| 預設標籤形狀 | `(N,)` | `(N, 8)` |
+| 預測目標 | 下一小時 AQI | 一次輸出未來 h1～h8 AQI |
+| 模型結構 | 單層 LSTM（hidden size 64）→ Linear（32）→ ReLU → Linear（1） | 單層 LSTM（hidden size 64）→ Linear（32）→ ReLU → Linear（預測步數） |
+| 測試評估 | 單步 MAE／RMSE | 各 horizon 的 MAE／RMSE，以及各 horizon 指標的平均 |
+| 預設 checkpoint | `aqi_lstm_model.pth` | `aqi_lstm_8h_model.pth` |
+
+`N` 為成功建立的序列數；h1 表示輸入窗口最後一小時之後的第一小時。兩個模型都取 LSTM 最後一個時間步的輸出送入全連接層，標籤及模型預測皆保留 AQI 原尺度。v2 直接輸出多個時點，不會將前一個預測遞迴當成下一步輸入。
+
+### 資料清理與序列建立
+
+1. **讀取及排序**：依測站與日期查詢資料庫，按時間升冪排列，移除不使用的測站及空氣品質指標欄位。`--start`、`--end` 必須是有效的無時區日期，且開始日不得晚於結束日；查無資料時會報錯。
+2. **數值轉換及補值**：v1 將 6 種污染物轉為數值並線性插值，不對目標 AQI 補值；v2 對 AQI 與 6 種污染物全部轉為浮點數並線性插值。v2 另會拒絕缺少必要欄位、重複時間或插值後仍有空值的資料。
+3. **依時間切分**：前 80% 資料列作訓練集，後 20% 作測試集。`StandardScaler` 僅在訓練集的輸入特徵上 `fit`，測試集只 `transform`。v2 在縮放前把 AQI 複製到 `_target_aqi`，供原尺度標籤使用。
+4. **建立逐時序列**：v1 要求歷史窗口及下一小時目標連續；v2 要求歷史窗口及全部未來目標連續。缺少的整點只會被統計，不會新增資料列；跨越時間缺口的序列會跳過。
+5. **銜接測試歷史**：將訓練集最後 `window_size` 列接到測試集前端，讓測試集開頭也能使用前段歷史。測試標籤只取測試期間；v2 每筆樣本還必須有完整的未來 `forecast_horizon` 個目標。
+
+目前線性插值發生在時間切分之前，可能使用缺口後方或切分點另一側的觀測值。v2 的訓練標籤及測試評估也可能包含插值後的 AQI，因此 pipeline 的測試指標與只使用原始真實值的回測／Gradio 評估口徑不同。
+
+### 執行訓練
+
+請在專案根目錄執行。以下兩個範例都使用木柵站 2025 年全年資料，包含 `2025-12-31` 全天。
+
+v1：訓練下一小時 AQI 模型。
 
 ```powershell
 python -m pipeline_v1.run_model `
@@ -283,12 +325,7 @@ python -m pipeline_v1.run_model `
   --epochs 50 --window-size 24 --model aqi_lstm_model.pth --no-visualization
 ```
 
-### v2：未來 8 小時 AQI
-
-- 輸入特徵：`AQI, O3, PM2.5, PM10, CO, SO2, NO2`
-- 預設歷史窗口：24 小時
-- 輸出：未來 h1～h8 共 8 個 AQI
-- 結構：LSTM hidden size 64，接 32 維全連接層、ReLU 與 8 個輸出
+v2：訓練一次預測未來 8 小時 AQI 的模型。
 
 ```powershell
 python -m pipeline_v2.run_model_v2 `
@@ -297,9 +334,31 @@ python -m pipeline_v2.run_model_v2 `
   --model aqi_lstm_8h_model.pth
 ```
 
-兩個訓練流程皆依時間切成前 80% 訓練、後 20% 測試；`StandardScaler` 只在訓練資料上 fit。預設使用 Adam、learning rate 0.001、MSE loss、batch size 32。訓練資料中的缺值採線性插值；時間不連續的窗口不會建立序列。
+| 命令列參數 | v1 預設 | v2 預設 | 說明 |
+|---|---|---|---|
+| `--station` | `木柵站` | `木柵站` | 資料庫測站名稱 |
+| `--start` | `2025-01-01` | `2025-01-01` | 開始日期，包含當日 |
+| `--end` | `2025-12-31` | `2025-12-31` | 結束日期，包含當日全天 |
+| `--model` | `aqi_lstm_model.pth` | `aqi_lstm_8h_model.pth` | checkpoint 輸出路徑，相對路徑以執行目錄為準 |
+| `--epochs` | `50` | `50` | 訓練輪數 |
+| `--window-size` | `24` | `24` | 歷史窗口小時數 |
+| `--forecast-horizon` | 不提供 | `8` | v2 一次輸出的未來小時數 |
+| `--no-visualization` | 未啟用 | 不提供 | v1 加上此旗標才會略過訓練前的 Plotly 圖表 |
 
-checkpoint 除權重外，也保存模型設定、特徵順序、窗口大小、scaler mean 與 scale。只應載入可信任的本機 checkpoint。
+v1 預設會開啟 AQI 趨勢圖與特徵散佈矩陣；v2 沒有內建視覺化步驟。v2 訓練可調整 `--forecast-horizon`，但根目錄的 `predict_8h.py` 僅接受 `forecast_horizon=8` 的 checkpoint。
+
+兩個流程預設使用 Adam、learning rate `0.001`、MSE loss、batch size `32`；訓練 DataLoader 會打亂樣本，測試 DataLoader 不打亂。測試比例、batch size 與 learning rate 可由 Python 函式參數調整，未提供對應命令列旗標。
+
+### 執行結果與 checkpoint
+
+訓練入口依序執行資料清理、序列建立、訓練、測試評估、最新窗口預測及 checkpoint 儲存：
+
+- v1 印出每輪 loss、測試集 MAE／RMSE，以及測試集最後窗口之後一小時的預測。
+- v2 印出每輪 loss、各 horizon 的 MAE／RMSE 與「整體」指標，再列出測試集最後連續窗口之後的多步預測表。表格包含日期、預測 AQI 及可對應的實際 AQI；超出載入期間的實際值會為空。
+- v2 的「整體 MAE／RMSE」分別為各 horizon 指標的算術平均；其中整體 RMSE 並非把所有 horizon 誤差攤平後重新開根號。
+- 兩個訓練入口只讀取觀測資料、列印結果及儲存 checkpoint；要將預測寫入資料庫，請使用下節的 `predict_1h.py` 或 `predict_8h.py`。
+
+checkpoint 包含 `model_state_dict`、`model_config`、`features`、`window_size`、`scaler_mean` 與 `scaler_scale`；v2 另保存 `forecast_horizon`，且 `model_config` 也包含該設定。推論時應沿用 checkpoint 的特徵順序、窗口與 scaler。只應載入可信任的本機 checkpoint。
 
 ## 歷史回測與未來預測
 
