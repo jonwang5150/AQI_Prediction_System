@@ -165,6 +165,7 @@ ORDER BY e.date
 """
 
 
+# 將月統計轉成含測站、期間與評估指標的知識庫文件。
 def _build_monthly_documents(rows) -> list[Document]:
     documents = []
     for row in rows:
@@ -192,6 +193,7 @@ def _build_monthly_documents(rows) -> list[Document]:
     return documents
 
 
+# 將每日統計與走勢誤差整理成可檢索的摘要文件。
 def _build_daily_documents(rows) -> list[Document]:
     documents = []
     for row in rows:
@@ -202,9 +204,11 @@ def _build_daily_documents(rows) -> list[Document]:
             if valid_pairs > 0 else None
         )
         ratio_text = f"{opposite_ratio}%" if opposite_ratio is not None else "無法計算"
+        # 保留有效指標數值，缺值時以明確文字說明。
         def metric(name):
             return row[name] if row[name] is not None else "無有效預測配對，無法計算"
 
+        # 將極值發生的測站與時間組成摘要文字。
         def occurrences(name):
             return "；".join(f"{item['station']} {item['observed_at']}" for item in row[name])
 
@@ -311,6 +315,7 @@ def build_knowledge_base(
     return len(documents)
 
 
+# 執行知識庫建置並顯示寫入的文件數量。
 def main() -> int:
     document_count = build_knowledge_base()
     print(f"向量知識庫建立完成，共寫入 {document_count} 份 Document")

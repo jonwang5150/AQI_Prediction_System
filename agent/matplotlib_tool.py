@@ -59,6 +59,7 @@ MATPLOTLIB_TOOL_SYSTEM_PROMPT = dedent("""\
 """)
 
 
+# 定義繪圖工具接收的資料與圖表需求。
 class MatplotlibToolInput(BaseModel):
     query: str = Field(
         description=(
@@ -78,6 +79,7 @@ def extract_code(text: str) -> str:
     return (match.group(1) if match else text).strip()
 
 
+# 串接模型產碼與程式執行，將繪圖需求轉成圖檔。
 class MatplotlibTool(BaseTool):
     name: str = "MatplotlibTool"
     description: str = dedent("""\
@@ -107,6 +109,7 @@ class MatplotlibTool(BaseTool):
     execute: bool = True  # False 時僅回傳程式碼，不執行
     timeout: int = 60
 
+    # 組合提示、模型與解析器，設定圖檔輸出及執行選項。
     @classmethod
     def create(
         cls,
@@ -162,6 +165,7 @@ class MatplotlibTool(BaseTool):
         return img_path, None
 
     # ---------- LangChain 介面 ----------
+    # 檢查繪圖需求並啟動產圖流程，將常見失敗轉為可讀訊息。
     def _run(self, query: str) -> str:
         if not query.strip():
             return "圖表產生失敗：請提供繪圖需求與資料。"
@@ -170,6 +174,7 @@ class MatplotlibTool(BaseTool):
         except (HTTPError, ResponseError, OSError, ValueError):
             return "圖表產生失敗：請確認模型授權、服務連線與圖檔目錄的寫入權限。"
 
+    # 產生繪圖程式並視設定執行，失敗時交由模型修正一次。
     def _generate_chart(self, query: str) -> str:
         raw = self.runnable.invoke({"user_query": query})
         code = extract_code(raw)
@@ -195,5 +200,6 @@ class MatplotlibTool(BaseTool):
 
         return f"圖表已產生，檔案路徑：{img_path}\n\n繪圖程式碼：\n```python\n{code}\n```"
 
+    # 將同步產圖工作交給執行緒，提供非同步工具介面。
     async def _arun(self, query: str) -> str:
         return await asyncio.to_thread(self._run, query)

@@ -137,6 +137,7 @@ AGENT_SYSTEM_PROMPT = dedent("""\
 """)
 
 
+# 在系統提示中加入台灣目前時間，供 Agent 判讀相對日期。
 @dynamic_prompt
 def agent_system_prompt(request) -> str:
     now = datetime.now(timezone(timedelta(hours=8)))

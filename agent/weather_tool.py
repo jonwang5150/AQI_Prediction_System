@@ -49,6 +49,7 @@ WEATHER_DESCRIPTIONS = {
 }
 
 
+# 限制木柵天氣預報天數為一至七天。
 class WeatherForecastInput(BaseModel):
     forecast_days: int = Field(
         default=3,
@@ -58,11 +59,13 @@ class WeatherForecastInput(BaseModel):
     )
 
 
+# 取得指定日期的天氣欄位值，缺少資料時回傳 None。
 def _value_at(values: dict, key: str, index: int):
     items = values.get(key, [])
     return items[index] if isinstance(items, list) and index < len(items) else None
 
 
+# 將天氣代碼轉為中文描述，無效代碼使用預設說明。
 def _weather_description(code) -> str:
     try:
         return WEATHER_DESCRIPTIONS.get(int(code), "未知天氣狀況")
@@ -139,6 +142,7 @@ class WeatherForecastTool(BaseTool):
     timeout: float = 10.0
     session: Any = Field(default=None, exclude=True)
 
+    # 向 Open-Meteo 查詢木柵目前天氣與逐日預報，回傳 JSON。
     def _run(self, forecast_days: int = 3) -> str:
         params = {
             "latitude": MUZHA_LATITUDE,
@@ -196,6 +200,7 @@ class WeatherForecastTool(BaseTool):
             }
         return json.dumps(result, ensure_ascii=False)
 
+    # 將同步天氣查詢交給執行緒，提供非同步呼叫介面。
     async def _arun(self, forecast_days: int = 3) -> str:
         import asyncio
 

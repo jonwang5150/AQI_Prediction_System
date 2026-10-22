@@ -41,6 +41,7 @@ from prediction_data_process import (
 PROJECT_DIR = Path(__file__).resolve().parent
 
 
+# 定義多步推論的輸入來源、目標期間、批次與試跑參數。
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--station", default="木柵站")
@@ -66,6 +67,7 @@ def load_checkpoint(path: Path):
     return model, features, window_size, horizon, mean, scale, model_version
 
 
+# 透過既有引擎載入多步推論所需的歷史觀測。
 def load_database_data(engine, station, query_start, input_end):
     with engine.connect() as connection:
         return read_database_observations(connection, station, query_start, input_end)
@@ -133,6 +135,7 @@ def main(data=None, argv: list[str] | None = None) -> int:
         input_end = latest_origin
     engine = None
 
+    # 需要資料庫來源時才建立引擎並載入模型輸入。
     def load_from_database():
         nonlocal engine
         engine = create_database_engine(settings)

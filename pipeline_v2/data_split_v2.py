@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader, TensorDataset
 TARGET_COLUMN = "_target_aqi"
 
 
+# 封裝多步訓練與測試資料，保留縮放器及預測長度設定。
 @dataclass
 class MultiHorizonDatasetBundle:
     train_df: pd.DataFrame
@@ -30,6 +31,7 @@ class MultiHorizonDatasetBundle:
     forecast_horizon: int
 
 
+# 建立連續小時輸入與多步 AQI 標籤，略過時間缺口及缺值標籤。
 def _make_sequences_new(
     data: pd.DataFrame,
     features: list[str],

@@ -21,6 +21,7 @@ except ImportError:  # 支援 python pipeline_v1/run_model.py
     from visualization import show_visualizations
 
 
+# 定義單步模型訓練的資料期間、模型路徑與訓練參數。
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the AQI LSTM prediction pipeline")
     parser.add_argument("--station", default="木柵站", help="資料庫測站名稱")
@@ -33,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# 串接資料清理、訓練、評估與預測，最後保存單步模型。
 def main() -> int:
     args = build_parser().parse_args()
     data, features = load_and_clean_data(station=args.station, start=args.start, end=args.end)

@@ -64,6 +64,7 @@ def update_to_latest(station: str, progress=None, now=None) -> str:
     if not UPDATE_LOCK.acquire(blocking=False):
         raise ValueError("目前已有更新工作執行中，請稍候")
     try:
+        # 將更新進度傳給介面；未提供回呼時略過通知。
         def report(value, message):
             if progress is not None:
                 progress(value, desc=message)
@@ -128,6 +129,7 @@ def update_to_latest(station: str, progress=None, now=None) -> str:
         UPDATE_LOCK.release()
 
 
+# 解析啟動參數並開啟儀表板，接上資料更新與預測功能。
 def main(argv=None) -> int:
     # 使用 prediction_visualization.visualizations，維持原有參數及四種圖表。
     args = visualizations.build_parser().parse_args(argv)

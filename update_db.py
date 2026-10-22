@@ -67,6 +67,7 @@ def database_connection(settings=None):
         engine.dispose()
 
 
+# 將欄位轉為有限的十進位數值，缺值回傳 None，無效值拋出錯誤。
 def parse_number(value: str, column: str) -> Decimal | None:
     if value.upper() in MISSING:
         return None

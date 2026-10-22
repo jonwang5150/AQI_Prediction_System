@@ -187,6 +187,7 @@ def build_agent_panel():
     import inspect
     import gradio as gr
 
+    # 處理聊天送出事件，更新對話、參考來源、圖表與按鈕狀態。
     def respond(question, display_history, agent_history):
         from agent.agent import chat_with_agent
         display_history = list(display_history or [])
@@ -314,6 +315,7 @@ def build_prediction_app(
 
         view_outputs = [plot, details, *buttons.values(), chart_content, rag_panel]
 
+        # 切換圖表、評估表或助理面板，並同步導覽按鈕樣式。
         def select_view(view):
             return (
                 gr.skip() if view == "rag" else figures[view], gr.update(visible=view == "metrics"),
@@ -327,10 +329,12 @@ def build_prediction_app(
                              outputs=view_outputs,
                              queue=False, api_name=f"view_{key}")
         if update_callback is not None:
+            # 執行資料更新後重新載入圖表，失敗時顯示所處階段。
             def refresh_data(progress=gr.Progress()):
                 nonlocal figures, summary, note
                 stage = "開始更新"
 
+                # 記錄目前更新階段，並將進度傳給 Gradio 介面。
                 def report_progress(value, desc=""):
                     nonlocal stage
                     if desc:
@@ -373,10 +377,12 @@ def build_prediction_app(
                                "已成功寫入的批次會保留，可再次按更新重試。")
                     return (*[gr.skip() for _ in range(len(view_outputs) + 2)], message)
 
+            # 更新開始時停用按鈕並切換為進度顯示狀態。
             def begin_update():
                 return (gr.update(value="更新中…", interactive=False),
                         gr.update(visible=False), gr.update(visible=True), gr.update(visible=False))
 
+            # 更新結束後恢復按鈕與一般操作介面。
             def finish_update():
                 return (gr.update(value="更新至最新", interactive=True),
                         gr.update(visible=True), gr.update(visible=False), gr.update(visible=True))
@@ -408,6 +414,7 @@ def show_prediction_visualization(
     if initial_window_days <= 0 or horizon not in range(1, 9):
         raise ValueError("window-days 必須大於 0，horizon 必須介於 1～8")
     sources = ["single", "8h"] if source == "both" else [source]
+    # 依目前測站及模型選項重新讀取儀表板資料。
     def reload_data():
         return {key: load_prediction_data(station, source=key, horizon=horizon,
                                          include_future=update_callback is not None) for key in sources}
@@ -421,6 +428,7 @@ def show_prediction_visualization(
                inbrowser=inbrowser, share=False, **style_options)
 
 
+# 定義圖表來源、測站、提前小時與網頁啟動參數。
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", choices=["both", "8h", "single"], default="both",
@@ -457,6 +465,7 @@ def launch_dashboard(args, update_callback=None) -> int:
     return 0
 
 
+# 解析命令列參數並啟動預測儀表板。
 def main(argv=None, update_callback=None) -> int:
     return launch_dashboard(build_parser().parse_args(argv), update_callback=update_callback)
 

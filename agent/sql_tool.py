@@ -26,21 +26,25 @@ TABLES = {model.__tablename__: model.__table__ for model in (
 TableName = Literal['air_quality_hourly', 'air_quality_predictions', 'air_quality_predictions_8h']
 
 
+# 拒絕未定義的欄位，作為查詢規格的驗證基底。
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
 
+# 描述單一欄位的篩選運算與條件值。
 class Filter(StrictModel):
     column: str
     operator: Literal['eq', 'ne', 'gt', 'ge', 'lt', 'le', 'is_null', 'not_null']
     value: str | int | float | bool | None = None
 
 
+# 定義允許的聚合函式及其統計欄位。
 class Metric(StrictModel):
     function: Literal['count', 'avg', 'min', 'max', 'sum']
     column: str
 
 
+# 描述單表查詢的欄位、條件、統計、排序與筆數限制。
 class QuerySpec(StrictModel):
     table: TableName
     columns: list[str] = Field(default_factory=list, max_length=20)
@@ -52,6 +56,7 @@ class QuerySpec(StrictModel):
     limit: int = Field(default=100, ge=1, le=500)
 
 
+# 封裝最多三個查詢規格，或記錄無法執行的拒絕原因。
 class QueryPlan(StrictModel):
     refusal: str = ''
     queries: list[QuerySpec] = Field(default_factory=list, max_length=3)
@@ -62,6 +67,7 @@ def build_select(spec: QuerySpec):
     spec = QuerySpec.model_validate(spec.model_dump())
     table = TABLES[spec.table]
 
+    # 取得白名單內的資料表欄位，拒絕未知欄位名稱。
     def column(name):
         if name not in table.c:
             raise ValueError(f'不允許的欄位：{name}')
@@ -180,10 +186,12 @@ air_quality_predictions_8h 包含不同 horizon_hours 和 model_version；
     f'{c.name} ({c.type})' for c in table.c) for name, table in TABLES.items())
 
 
+# 驗證自然語言查詢問題，限制空值與輸入長度。
 class SQLInput(StrictModel):
     query: str = Field(min_length=1, max_length=4000, description='要查詢三張 AQI 資料表的問題')
 
 
+# 將自然語言轉為受限查詢規格，並以唯讀交易取得資料。
 class SQLTool(BaseTool):
     name: str = "SqlTool"
     description: str = dedent("""\
@@ -214,6 +222,7 @@ class SQLTool(BaseTool):
     runnable: Runnable
     engine: Any = Field(exclude=True)
 
+    # 組合結構化查詢模型與資料庫引擎，建立 SQL 工具。
     @classmethod
     def create(cls, llm: Runnable, *, engine=None):
         example = QueryPlan(queries=[QuerySpec(
@@ -242,6 +251,7 @@ class SQLTool(BaseTool):
 
         return cls(runnable=pipeline, engine=engine)
 
+    # 產生並驗證查詢計畫，執行後回傳結果或明確的錯誤資訊。
     def _run(self, query: str):
         if not query.strip():
             return json.dumps({'error': '請輸入查詢問題'}, ensure_ascii=False)
@@ -275,5 +285,6 @@ class SQLTool(BaseTool):
                       'retryable': False}
         return json.dumps(result, ensure_ascii=False, default=str)
 
+    # 以執行緒執行同步 SQL 查詢，支援非同步工具呼叫。
     async def _arun(self, query: str):
         return await asyncio.to_thread(self._run, query)

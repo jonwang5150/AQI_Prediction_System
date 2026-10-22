@@ -45,12 +45,14 @@ DATE_FIELD_END = "ctl00$CPH_Content$tbx_end"
 DOWNLOAD_BUTTON = "ctl00$CPH_Content$btn_download"
 
 
+# 保存網站測站選項的表單欄位名稱與提交值。
 @dataclass(frozen=True)
 class StationField:
     name: str
     value: str
 
 
+# 封裝下載表單的隱藏欄位與可選測站。
 @dataclass(frozen=True)
 class FormData:
     hidden: dict[str, str]
@@ -60,6 +62,7 @@ class FormData:
 class CompatibleTLSAdapter(HTTPAdapter):
     """相容目標網站的舊式憑證，同時保留 CA 與主機名稱驗證。"""
 
+    # 調整 TLS 憑證相容設定後建立 HTTP 連線池。
     def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
         context = ssl.create_default_context()
         # 新版 OpenSSL 的 strict 模式會因該站憑證缺少 SKI 而拒絕連線。
@@ -70,6 +73,7 @@ class CompatibleTLSAdapter(HTTPAdapter):
         return super().init_poolmanager(connections, maxsize, block, **pool_kwargs)
 
 
+# 解析命令列日期，格式錯誤時提供可讀的參數提示。
 def parse_date(value: str) -> date:
     normalized = value.strip().replace("/", "-")
     try:
@@ -92,6 +96,7 @@ def split_date_range(start: date, end: date) -> Iterable[tuple[date, date]]:
         batch_start = batch_end + timedelta(days=1)
 
 
+# 建立含重試策略、請求標頭與 TLS 相容設定的連線工作階段。
 def make_session() -> requests.Session:
     retry = Retry(
         total=3,
@@ -155,6 +160,7 @@ def parse_form(html: str) -> FormData:
     return FormData(hidden=hidden, stations=stations)
 
 
+# 下載並解析網站表單，取得本次提交所需欄位。
 def read_form(session: requests.Session, timeout: float) -> FormData:
     response = session.get(URL, timeout=timeout)
     response.raise_for_status()
@@ -162,6 +168,7 @@ def read_form(session: requests.Session, timeout: float) -> FormData:
     return parse_form(response.text)
 
 
+# 將測站輸入對應到網站選項，支援別名與全部選取。
 def normalize_station_names(raw: str, available: Iterable[str]) -> list[str]:
     available_list = list(available)
     value = raw.strip()
@@ -191,6 +198,7 @@ def normalize_station_names(raw: str, available: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(resolved))
 
 
+# 判斷回應是否為 HTML，避免將錯誤頁當作資料檔。
 def looks_like_html(response: requests.Response) -> bool:
     content_type = response.headers.get("Content-Type", "").lower()
     prefix = response.content[:512].lstrip().lower()
@@ -212,6 +220,7 @@ def extract_page_message(response: requests.Response) -> str:
     # soup.get_text(" ", strip=True) 取得網頁中的純文字，以空格分隔不同元素，並移除前後空白。
     
 
+# 更新表單驗證欄位並提交指定測站與日期區間的下載請求。
 def download_batch(
     session: requests.Session,
     stations: list[str],
@@ -280,6 +289,7 @@ def parse_download_rows(content: bytes) -> Iterator[dict]:
             raise ValueError(f"下載資料第 {line} 行：{exc}") from exc
 
 
+# 定義測站、下載期間及匯入選項的命令列參數。
 def build_argument_parser(settings) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--stations", help="測站名稱，以逗號分隔；all 代表全部")

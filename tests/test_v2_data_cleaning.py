@@ -7,7 +7,9 @@ import pandas as pd
 from pipeline_v2.data_cleaning_v2 import FEATURES_NEW, load_and_clean_data_new
 
 
+# 驗證多步模型的資料讀取、插值及時間資料檢查。
 class DatabaseCleaningV2Tests(unittest.TestCase):
+    # 確認預設查詢涵蓋結束日，並維持原有的缺值插補行為。
     @patch('pipeline_v2.data_cleaning_v2.create_engine')
     @patch('pipeline_v2.data_cleaning_v2.read_database_observations')
     def test_default_range_and_original_interpolation(self, read, engine):
@@ -24,12 +26,14 @@ class DatabaseCleaningV2Tests(unittest.TestCase):
         self.assertEqual(data['AQI'].tolist(), [1, 2, 3])
         engine.return_value.dispose.assert_called_once()
 
+    # 確認無效日期區間不會建立資料庫引擎。
     @patch('pipeline_v2.data_cleaning_v2.create_engine')
     def test_invalid_range_does_not_connect(self, engine):
         with self.assertRaises(ValueError):
             load_and_clean_data_new(start='2026-01-01', end='2025-12-31')
         engine.assert_not_called()
 
+    # 確認查無資料時明確報錯，並釋放資料庫引擎。
     @patch('pipeline_v2.data_cleaning_v2.create_engine')
     @patch('pipeline_v2.data_cleaning_v2.read_database_observations', return_value=pd.DataFrame())
     def test_empty_result(self, read, engine):
@@ -37,6 +41,7 @@ class DatabaseCleaningV2Tests(unittest.TestCase):
             load_and_clean_data_new()
         engine.return_value.dispose.assert_called_once()
 
+    # 確認相同時間的重複觀測資料會被拒絕。
     @patch('pipeline_v2.data_cleaning_v2.create_engine')
     @patch('pipeline_v2.data_cleaning_v2.read_database_observations')
     def test_duplicate_times_still_rejected(self, read, engine):

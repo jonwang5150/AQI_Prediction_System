@@ -9,7 +9,9 @@ import torch
 import torch.nn as nn
 
 
+# 以歷史污染物特徵預測下一小時 AQI 的 LSTM 模型。
 class LSTMModel(nn.Module):
+    # 建立 LSTM 與回歸輸出層，設定輸入及隱藏層大小。
     def __init__(
         self,
         input_size: int = 6,
@@ -29,6 +31,7 @@ class LSTMModel(nn.Module):
             nn.Linear(32, 1),
         )
 
+    # 取序列最後一個 LSTM 輸出，轉成單步 AQI 預測。
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         output, _ = self.lstm(x)
         output = output[:, -1, :]

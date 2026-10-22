@@ -19,6 +19,7 @@ except ImportError:  # 支援 python pipeline_v2/run_model_v2.py
     from train_v2 import evaluate_model_new, train_model_new
 
 
+# 定義多步模型訓練的資料期間、視窗及預測長度參數。
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--station", default="木柵站", help="資料庫測站名稱")
@@ -31,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# 執行多步資料處理、訓練、評估與預測，保存模型及前處理設定。
 def main() -> int:
     args = build_parser().parse_args()
     data, features = load_and_clean_data_new(station=args.station, start=args.start, end=args.end)

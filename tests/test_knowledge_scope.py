@@ -8,7 +8,9 @@ from build_pgvector import _build_monthly_documents, _document_id
 from agent import rag_tool
 
 
+# 驗證知識庫文件與檢索條件維持指定測站範圍。
 class KnowledgeScopeTests(unittest.TestCase):
+    # 確認月摘要標示測站，且文件 ID 不因內容更新而改變。
     def test_monthly_document_labels_scope_and_stable_identity(self):
         row = dict(month=datetime(2024, 2, 1), avg_actual=42, avg_predicted=43,
                    mae=2, rmse=3, bias=1, sample_count=10)
@@ -21,6 +23,7 @@ class KnowledgeScopeTests(unittest.TestCase):
         document.metadata['station'] = '另一站'
         self.assertNotEqual(original_id, _document_id(document))
 
+    # 確認指定日期檢索同時套用木柵站條件並標示來源測站。
     @patch('agent.rag_tool._vector_store')
     def test_station_filter_combines_with_specific_date(self, store):
         store.return_value.similarity_search.return_value = [SimpleNamespace(

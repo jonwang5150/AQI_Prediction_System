@@ -9,10 +9,13 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from agent.agent import chat_with_agent
 
 
+# 驗證聊天歷史、工具結果與 Gradio 對話事件的整合行為。
 class AgentChatTests(unittest.TestCase):
+    # 確認追問保留工具上下文，且不同對話的歷史互不影響。
     def test_follow_up_keeps_tool_context_and_separate_history(self):
         original = [HumanMessage(content='first'), AIMessage(content='answer')]
         runner = Mock()
+        # 模擬 Agent 回傳含工具來源與最終回答的訊息序列。
         def invoke(state, config):
             return {'messages': [*state['messages'],
                 ToolMessage(name='AQIKnowledgeBase', tool_call_id='x',
@@ -27,6 +30,7 @@ class AgentChatTests(unittest.TestCase):
         chat_with_agent('new session', runner=runner)
         self.assertEqual(len(runner.invoke.call_args.args[0]['messages']), 1)
 
+    # 確認只公開圖表目錄內、由成功工具結果回傳的圖檔。
     def test_only_successful_tool_chart_under_chart_directory_is_exposed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -40,6 +44,7 @@ class AgentChatTests(unittest.TestCase):
             with patch('agent.agent.CHART_DIRECTORY', root):
                 self.assertEqual(chat_with_agent('plot', runner=runner)['charts'], [str(good.resolve())])
 
+    # 確認呼叫失敗時保留原歷史，且不洩漏內部例外內容。
     def test_failure_preserves_history_without_exposing_exception(self):
         runner = Mock()
         runner.invoke.side_effect = RuntimeError('secret database URL')
@@ -49,11 +54,13 @@ class AgentChatTests(unittest.TestCase):
         self.assertEqual(result['history'], history)
         self.assertNotIn('secret', result['answer'])
 
+    # 確認空白問題不會觸發 Agent 呼叫。
     def test_empty_input_does_not_call_agent(self):
         runner = Mock()
         self.assertFalse(chat_with_agent(' ', runner=runner)['ok'])
         runner.invoke.assert_not_called()
 
+    # 確認面板透過聊天介面更新回覆、圖表與清除狀態。
     def test_panel_events_use_adapter_and_clear_state(self):
         import gradio as gr
         from prediction_visualization.visualizations import build_agent_panel

@@ -12,6 +12,7 @@ except ImportError:  # 支援直接執行 pipeline_v1 內的程式
     from model import LSTMModel
 
 
+# 以均方誤差與 Adam 更新模型權重，回傳訓練完成的模型。
 def train_model(
     model: LSTMModel,
     train_loader: DataLoader,
@@ -41,6 +42,7 @@ def train_model(
     return model
 
 
+# 在測試集上推論，計算並回傳整體 MAE 與 RMSE。
 def evaluate_model(model: LSTMModel, test_loader: DataLoader) -> tuple[float, float]:
     model.eval()
     predictions = []

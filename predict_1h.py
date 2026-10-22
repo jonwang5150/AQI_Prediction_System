@@ -33,6 +33,7 @@ PREDICTION_START = pd.Timestamp("2026-01-01 00:00:00")
 PREDICTION_END = pd.Timestamp("2026-08-01 00:00:00")
 
 
+# 定義單步推論的測站、目標期間、輸入檔案與模型參數。
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--station", default="木柵站", help="資料庫中的測站名稱")
@@ -48,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# 還原單步模型及訓練時的特徵順序、視窗與縮放參數。
 def load_checkpoint(path: Path) -> tuple[LSTMModel, list[str], int, np.ndarray, np.ndarray]:
     checkpoint = load_checkpoint_data(path)
     features, window_size, scaler_mean, scaler_scale = preprocessing_from_checkpoint(checkpoint)
@@ -55,6 +57,7 @@ def load_checkpoint(path: Path) -> tuple[LSTMModel, list[str], int, np.ndarray, 
     return model, features, window_size, scaler_mean, scaler_scale
 
 
+# 讀取指定測站的觀測資料，範圍不包含預測區間終點。
 def load_database_data(station: str, query_start: pd.Timestamp, end=None) -> pd.DataFrame:
     end = PREDICTION_END if end is None else pd.Timestamp(end)
     with update_db.database_connection(settings) as connection:

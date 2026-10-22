@@ -1,6 +1,7 @@
 from langchain_core.prompts import PromptTemplate, HumanMessagePromptTemplate, ChatPromptTemplate, SystemMessagePromptTemplate
 
 
+# 將 system 與 human 設定組成可重用的聊天提示範本。
 def build_standard_chat_prompt_template(kwargs):
 
     messages = []

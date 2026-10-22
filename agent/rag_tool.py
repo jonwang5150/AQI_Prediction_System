@@ -75,6 +75,7 @@ def _question_filter(question: str) -> tuple[dict, str]:
                      {"month": {"$like": f"{year:04d}-{month:02d}-%"}}]}, f"{year:04d}-{month:02d} 的每月摘要"
 
 
+# 辨識整月每日平均 AQI 需求，回傳對應的年份與月份。
 def _daily_series_period(question: str):
     if (not any(word in question for word in ('每日', '每天', '逐日'))
             or '平均' not in question or 'aqi' not in question.lower()
@@ -87,6 +88,7 @@ def _daily_series_period(question: str):
     return None
 
 
+# 快取摘要查詢用的資料庫引擎，避免重複建立。
 @lru_cache(maxsize=1)
 def _summary_engine():
     return create_engine(settings.database_url, pool_pre_ping=True)
@@ -129,6 +131,7 @@ def _format_daily_series(documents, year: int, month: int) -> dict:
     }
 
 
+# 讀取指定月份的木柵每日摘要，回傳排序序列與完整性檢查。
 def query_daily_series(year: int, month: int) -> dict:
     if year != 2026:
         return {'error': '知識庫僅收錄 2026 年摘要。', 'retryable': False}
@@ -151,6 +154,7 @@ def query_daily_series(year: int, month: int) -> dict:
     return _format_daily_series(documents, year, month)
 
 
+# 首次查詢時才建立並快取向量庫，避免啟動時依賴模型服務。
 @lru_cache(maxsize=1)
 def _vector_store():
     # 延後載入及連線，讓圖表啟動不依賴 Ollama 的可用性。
@@ -217,6 +221,7 @@ def query_knowledge_base(question: str, *, runnable: Runnable) -> tuple[str, str
                 "若使用雲端模型，請確認已登入或具備有效授權。可稍後重試。", sources)
 
 
+# 限制知識庫查詢問題的長度，供工具驗證輸入。
 class KnowledgeBaseInput(BaseModel):
     question: str = Field(
         min_length=1,
@@ -253,6 +258,7 @@ class KnowledgeBaseTool(BaseTool):
     args_schema: type[BaseModel] = KnowledgeBaseInput
     runnable: Runnable
 
+    # 以外部傳入的模型組合摘要問答流程。
     @classmethod
     def create(cls, llm: Runnable):
         prompt = ChatPromptTemplate.from_messages([
@@ -262,6 +268,7 @@ class KnowledgeBaseTool(BaseTool):
         pipeline = prompt | llm | StrOutputParser()
         return cls(runnable=pipeline)
 
+    # 依問題選擇完整日序列或 RAG 問答，將結果轉為 JSON。
     def _run(self, question: str) -> str:
         try:
             period = _daily_series_period(question)
@@ -278,5 +285,6 @@ class KnowledgeBaseTool(BaseTool):
             ensure_ascii=False,
         )
 
+    # 以執行緒執行同步知識庫查詢，支援非同步呼叫。
     async def _arun(self, question: str) -> str:
         return await asyncio.to_thread(self._run, question)

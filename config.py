@@ -33,6 +33,7 @@ RAG_SOURCES = {'air_quality_hourly': {'kind': '實際觀測',
                                                     'created_at']}}
 
 
+# 集中保存資料庫、模型與 RAG 設定，供各模組共用。
 @dataclass(frozen=True)
 class Settings:
     database_url: str
@@ -49,20 +50,23 @@ class Settings:
     dry_run: bool = False
     rag_sources: dict = field(default_factory=dict)
 
-    # ???????????????????
+    # 以 Ollama 相容的屬性名稱提供模型服務位址。
     @property
     def ollama_base_url(self) -> str:
         return self.llm_base_url
 
+    # 以 Ollama 相容的屬性名稱取得聊天模型設定。
     @property
     def ollama_chat_model(self) -> str:
         return self.llm_model
 
+    # 以 Ollama 相容的屬性名稱取得嵌入模型設定。
     @property
     def ollama_embedding_model(self) -> str:
         return self.embedding_model
 
 
+# 將環境變數解析為布林值，未設定時採用預設值。
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -70,6 +74,7 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# 載入 .env 與環境變數，建立專案共用設定。
 def load_settings() -> Settings:
     load_dotenv(Path(__file__).with_name(".env"), override=False)
     return Settings(

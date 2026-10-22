@@ -9,7 +9,9 @@ import torch
 from torch import nn
 
 
+# 由歷史 AQI 與污染物特徵一次預測多個未來小時。
 class MultiHorizonLSTM(nn.Module):
+    # 建立 LSTM 與多步回歸輸出層，設定預測小時數。
     def __init__(
         self,
         input_size: int = 7,
@@ -31,6 +33,7 @@ class MultiHorizonLSTM(nn.Module):
             nn.Linear(32, forecast_horizon),
         )
 
+    # 取最後一個時間步的特徵，輸出各提前小時的 AQI。
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         output, _ = self.lstm(inputs)
         return self.fc(output[:, -1, :])

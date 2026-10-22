@@ -8,10 +8,12 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 
+# 提供所有 SQLAlchemy 資料表模型共用的宣告基底。
 class Base(DeclarativeBase):
     pass
 
 
+# 對應逐時空氣品質觀測表，以測站與觀測時間識別資料。
 class AirQualityHourly(Base):
     __tablename__ = "air_quality_hourly"
     __table_args__ = {"schema": "public"}
@@ -84,13 +86,16 @@ def _upsert_model_batch(
         session.execute(statement)
 
 
+# 批次新增觀測資料，主鍵衝突時更新既有紀錄。
 def upsert_batch(session: Session, rows: list[dict]) -> None:
     _upsert_model_batch(session, rows, AirQualityHourly)
 
 
+# 批次新增或更新單步 AQI 預測紀錄。
 def upsert_prediction_batch(session: Session, rows: list[dict]) -> None:
     _upsert_model_batch(session, rows, AirQualityPrediction)
 
 
+# 批次新增或更新多步預測，保留各提前小時及模型版本。
 def upsert_prediction_8h_batch(session: Session, rows: list[dict]) -> None:
     _upsert_model_batch(session, rows, AirQualityPrediction8h)

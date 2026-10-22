@@ -13,6 +13,7 @@ except ImportError:  # 支援直接執行 pipeline_v2 內的程式
     from model_v2 import MultiHorizonLSTM
 
 
+# 以多步預測的均方誤差訓練模型，逐輪顯示平均損失。
 def train_model_new(
     model: MultiHorizonLSTM,
     train_loader: DataLoader,
@@ -38,6 +39,7 @@ def train_model_new(
     return model
 
 
+# 計算各提前小時的 MAE 與 RMSE，回傳逐步誤差陣列。
 def evaluate_model_new(
     model: MultiHorizonLSTM,
     test_loader: DataLoader,

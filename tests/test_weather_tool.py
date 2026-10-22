@@ -14,7 +14,9 @@ from agent.weather_tool import (
 )
 
 
+# 離線驗證木柵天氣工具的 API 參數、資料格式與失敗回應。
 class WeatherForecastToolTests(unittest.TestCase):
+    # 確認以固定木柵座標查詢，並正確轉換目前天氣與逐日預報。
     def test_returns_structured_muzha_forecast(self):
         response = Mock()
         response.json.return_value = {
@@ -60,6 +62,7 @@ class WeatherForecastToolTests(unittest.TestCase):
         self.assertEqual(kwargs["params"]["longitude"], MUZHA_LONGITUDE)
         self.assertNotIn("location", kwargs["params"])
 
+    # 確認網路失敗時回傳木柵錯誤訊息，且不公開連線細節。
     def test_network_failure_returns_safe_error(self):
         session = Mock()
         session.get.side_effect = requests.ConnectionError("private details")

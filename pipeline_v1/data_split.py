@@ -11,6 +11,7 @@ from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 
 
+# 封裝單步模型的訓練、測試資料與前處理設定。
 @dataclass
 class DatasetBundle:
     train_df: pd.DataFrame
@@ -26,6 +27,7 @@ class DatasetBundle:
     window_size: int
 
 
+# 以連續小時視窗建立特徵序列及下一小時 AQI 標籤。
 def _make_sequences(
     data: pd.DataFrame,
     features: list[str],
