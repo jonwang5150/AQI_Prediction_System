@@ -22,41 +22,7 @@ VIEW_LABELS = {
 }
 MODEL_COLORS = {"single": "#2563eb", "8h": "#16a34a"}
 
-DASHBOARD_CSS = """
-#aqi-refresh {width: 144px !important; min-width: 144px !important;
-              max-width: 144px !important; flex: 0 0 144px !important;
-              height: 36px !important; min-height: 36px !important; padding: 6px 12px !important;}
-#aqi-busy {padding: 24px !important; border: 1px solid #fdba74;
-           border-radius: 12px; background: var(--block-background-fill);}
-#aqi-progress {min-height: 140px !important;}
-#aqi-rag-actions {gap: 10px; justify-content: flex-start;}
-.aqi-rag-button {width: 132px !important; min-width: 132px !important;
-                 max-width: 132px !important; flex: 0 0 132px !important;
-                 min-height: 40px !important; padding: 8px 16px !important;}
-#aqi-rag-panel {box-sizing: border-box; width: 100%; max-width: 1100px;
-                padding: 24px; margin: 4px auto 20px; align-self: center; gap: 16px;
-                border: 1px solid var(--border-color-primary);
-                border-radius: 14px; background: var(--block-background-fill);}
-#aqi-rag-description {color: var(--body-text-color-subdued);}
-#aqi-rag-result {padding: 18px; gap: 10px; border-radius: 10px;
-                 border: 1px solid var(--border-color-primary);
-                 background: var(--background-fill-primary);}
-#aqi-rag-answer {line-height: 1.8; overflow-wrap: anywhere;}
-#aqi-rag-sources textarea {max-height: 280px; overflow-y: auto;}
-#aqi-rag-panel.aqi-agent-wide {max-width: none; width: 100%; align-self: stretch;}
-#aqi-agent-layout {align-items: flex-start; gap: 20px;}
-#aqi-agent-chat {height: clamp(280px, 43vh, 460px) !important;}
-#aqi-agent-gallery {height: clamp(360px, 65vh, 720px) !important;}
-@media (max-width: 900px) {
-    #aqi-agent-layout {flex-direction: column;}
-    #aqi-agent-layout > div {width: 100%; min-width: 0 !important;}
-    #aqi-agent-gallery {height: 420px !important;}
-}
-@media (max-width: 600px) {
-    #aqi-rag-panel {padding: 16px;}
-    #aqi-rag-result {padding: 12px;}
-}
-"""
+DASHBOARD_CSS = Path(__file__).with_name("dashboard.css").read_text(encoding="utf-8")
 
 
 def build_prediction_figures(
