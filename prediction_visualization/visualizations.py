@@ -162,10 +162,11 @@ def build_agent_panel():
                    gr.update(interactive=True), gr.update(interactive=True), gr.skip(), gr.skip(), gr.skip())
             return
         display_history.append({'role': 'user', 'content': question.strip()})
+        display_history.append({'role': 'assistant', 'content': '正在處理你的需求，請稍候…'})
         yield (gr.update(value='', interactive=False), display_history, agent_history, gr.skip(), '',
                gr.update(interactive=False), gr.update(interactive=False), gr.skip(), gr.skip(), gr.skip())
         result = chat_with_agent(question, agent_history)
-        display_history.append({'role': 'assistant', 'content': result['answer']})
+        display_history[-1] = {'role': 'assistant', 'content': result['answer']}
         has_charts = bool(result['charts'])
         yield (gr.update(value='', interactive=True), display_history, result['history'],
                result['charts'] if has_charts else gr.skip(), result['references'],
@@ -199,7 +200,7 @@ def build_agent_panel():
                     submit = gr.Button("送出訊息", variant="primary", size="sm", scale=0,
                                        min_width=132, elem_classes=["aqi-rag-button"])
                     clear = gr.Button("清除對話", size="sm", scale=0, elem_classes=["aqi-rag-button"])
-                    show_chart = gr.Button("查看圖表", size="sm", scale=0, visible=False,
+                    show_chart = gr.Button("查看圖表", size="sm", scale=0,
                                            elem_classes=["aqi-rag-button"])
                 with gr.Accordion("提問範例", open=False):
                     gr.Examples(examples=[
@@ -222,7 +223,7 @@ def build_agent_panel():
         concurrency_limit=1, concurrency_id="aqi-agent", trigger_mode="once",
         show_progress="full", show_progress_on=[chatbot], api_name=False,
     )
-    clear.click(lambda: ('', [], [], [], '', gr.update(visible=False), gr.update(elem_classes=[]), gr.update(visible=False)), inputs=None,
+    clear.click(lambda: ('', [], [], [], '', gr.update(visible=False), gr.update(elem_classes=[]), gr.update(visible=True)), inputs=None,
                 outputs=[question, chatbot, agent_state, gallery, sources, chart_column, panel, show_chart],
                 concurrency_limit=1, concurrency_id="aqi-agent", api_name=False)
     hide_chart.click(lambda: (gr.update(visible=False), gr.update(elem_classes=[])), inputs=None,

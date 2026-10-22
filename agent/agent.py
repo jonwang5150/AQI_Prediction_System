@@ -51,6 +51,10 @@ AGENT_SYSTEM_PROMPT = dedent("""\
 5. 空結果不是零；null 是缺值。不得填造觀測值、預測值、引用或圖檔路徑。
 
 【工具選擇優先順序】
+- 「2026/1~9月平均 AQI 長條圖」這類跨月需求，先呼叫 AQIKnowledgeBase，question 保留完整年份與月份範圍。
+  工具的每月序列模式會完整讀取範圍內的月摘要，回傳 rows、complete、missing_months。
+  complete=true 時把每個月的 month、avg_actual_aqi、樣本數與統計口徑交給 MatplotlibTool 畫圖。
+  complete=false 時說明缺少哪些月份或平均值，先詢問是否繪製不完整資料；不得補造、補零或只畫第一個月。
 - 「某年某月每日平均 AQI 趨勢圖」必須先呼叫 AQIKnowledgeBase，question 保留年月與「每日平均 AQI」。
   該工具的整月逐日模式會完整取得已存每日摘要，回傳排序好的 rows 和缺日檢查，並非 top_k 相似檢索。
   complete=true 時直接把全部日期、avg_actual_aqi、來源與統計口徑交給 MatplotlibTool 畫折線圖。
@@ -199,7 +203,7 @@ def chat_with_agent(question: str, history=None, *, runner=None) -> dict:
         current = messages[len(previous) + 1:]
         final = next((message for message in reversed(current)
                       if isinstance(message, AIMessage) and not message.tool_calls), None)
-        answer = final.text if final is not None else '本次未產生完整回答，請重新提問。'
+        answer = final.text.strip() if final is not None else ''
         charts, references = [], []
         for message in current:
             if not isinstance(message, ToolMessage) or not isinstance(message.content, str):
@@ -219,8 +223,15 @@ def chat_with_agent(question: str, history=None, *, runner=None) -> dict:
                         references.append(payload['references'])
                 except (ValueError, TypeError):
                     pass
-        return {'answer': answer, 'history': messages, 'charts': charts,
-                'references': '\n\n---\n\n'.join(references), 'ok': final is not None}
+        ok = bool(answer or charts)
+        if not answer:
+            if charts:
+                answer = '圖表已產生，請查看圖表區。'
+            else:
+                logging.getLogger(__name__).warning('Agent 未產生文字回覆或圖表')
+                answer = '模型未回傳文字回覆，也未產生圖表。請重新送出問題；先前對話已保留。'
+        return {'answer': answer, 'history': messages if ok else previous, 'charts': charts,
+                'references': '\n\n---\n\n'.join(references), 'ok': ok}
     except Exception as exc:
         logging.getLogger(__name__).error('Agent 對話失敗 (%s)', type(exc).__name__)
         status = getattr(exc, 'status_code', None)

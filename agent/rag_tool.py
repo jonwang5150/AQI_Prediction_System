@@ -88,6 +88,85 @@ def _daily_series_period(question: str):
     return None
 
 
+def _monthly_series_period(question: str):
+    """辨識同一年內的月份範圍，例如 2026/1~9月平均 AQI。"""
+    if ('平均' not in question or 'aqi' not in question.lower()
+            or any(word in question.lower() for word in ('每日', '每天', '逐日', '預測', 'mae', 'rmse', 'bias'))):
+        return None
+    match = re.search(
+        r'(?<!\d)(\d{4})\s*(?:年\s*|[-/])(\d{1,2})\s*月?\s*'
+        r'(?:~|～|至|到|－|–|—|-)\s*(?:(\d{4})\s*(?:年\s*|[-/]))?(\d{1,2})\s*月',
+        question,
+    )
+    if not match:
+        return None
+    year, start, end = int(match[1]), int(match[2]), int(match[4])
+    if (match[3] and int(match[3]) != year) or not 1 <= start <= end <= 12:
+        raise ValueError('請提供同一年內由早到晚的有效月份範圍。')
+    return year, start, end
+
+
+def _format_monthly_series(documents, year: int, start_month: int, end_month: int) -> dict:
+    """保留各月摘要的實際平均值與缺月資訊，不以相似搜尋重建序列。"""
+    expected = [f'{year:04d}-{month:02d}' for month in range(start_month, end_month + 1)]
+    by_month = {}
+    for document in documents:
+        metadata = document['cmetadata']
+        month = str(metadata.get('month', ''))[:7]
+        if (metadata.get('station') != SUMMARY_STATION
+                or metadata.get('source') != SUMMARY_SOURCES[1]
+                or month not in expected or month in by_month):
+            raise ValueError('摘要範圍不符或同月摘要重複')
+        match = re.search(r'^平均實際 AQI：([^\r\n]+)', document['document'], re.MULTILINE)
+        value = metadata.get('avg_actual') if 'avg_actual' in metadata else (match[1].strip() if match else None)
+        average = None
+        if value is not None and value != '無有效預測配對，無法計算':
+            average = Decimal(str(value))
+            if not average.is_finite():
+                raise ValueError('摘要平均值無效')
+            average = float(average)
+        count = re.search(r'^配對樣本數：(\d+)\s*$', document['document'], re.MULTILINE)
+        by_month[month] = {'month': month, 'avg_actual_aqi': average,
+                           'sample_count': metadata.get('sample_count', int(count[1]) if count else None)}
+    missing = [month for month in expected if month not in by_month]
+    no_average = [month for month in expected if month in by_month and by_month[month]['avg_actual_aqi'] is None]
+    return {
+        'station': SUMMARY_STATION, 'period': f'{expected[0]} ~ {expected[-1]}',
+        'source': 'AQI 知識庫每月摘要', 'scope': '木柵站有效預測配對樣本的每月平均實際 AQI',
+        'expected_months': len(expected), 'retrieved_months': len(by_month),
+        'complete': not missing and not no_average, 'missing_months': missing,
+        'months_without_average': no_average,
+        'rows': [by_month.get(month, {'month': month, 'avg_actual_aqi': None, 'sample_count': None}) for month in expected],
+        'plot_instruction': '依月份排序繪圖，標示有效配對樣本口徑；缺月或缺值先告知資料不完整，不補零。',
+    }
+
+
+def query_monthly_series(year: int, start_month: int, end_month: int) -> dict:
+    """唯讀查詢指定月份範圍內的全部木柵月摘要。"""
+    if year != 2026:
+        return {'error': '知識庫僅收錄 2026 年摘要。', 'retryable': False}
+    if not 1 <= start_month <= end_month <= 12:
+        raise ValueError('月份範圍無效')
+    start = f'{year:04d}-{start_month:02d}'
+    end = f'{year + (end_month == 12):04d}-{end_month % 12 + 1:02d}'
+    with _summary_engine().connect() as connection:
+        with connection.begin():
+            connection.execute(text('SET TRANSACTION READ ONLY'))
+            connection.execute(text("SET LOCAL statement_timeout = '10s'"))
+            documents = connection.execute(text('''
+                SELECT e.document, e.cmetadata
+                FROM langchain_pg_embedding e
+                JOIN langchain_pg_collection c ON c.uuid = e.collection_id
+                WHERE c.name = :collection AND e.cmetadata->>'station' = :station
+                  AND e.cmetadata->>'source' = :source
+                  AND LEFT(e.cmetadata->>'month', 7) >= :start
+                  AND LEFT(e.cmetadata->>'month', 7) < :end
+                ORDER BY e.cmetadata->>'month'
+            '''), {'collection': COLLECTION_NAME, 'station': SUMMARY_STATION,
+                   'source': SUMMARY_SOURCES[1], 'start': start, 'end': end}).mappings().all()
+    return _format_monthly_series(documents, year, start_month, end_month)
+
+
 # 快取摘要查詢用的資料庫引擎，避免重複建立。
 @lru_cache(maxsize=1)
 def _summary_engine():
@@ -243,6 +322,9 @@ class KnowledgeBaseTool(BaseTool):
         - 詢問特定日期或月份的預測表現
         - 比較實際 AQI 與預測 AQI
         - 查詢 MAE、RMSE、Bias 或走勢相反比例
+        - 跨月平均實際 AQI／長條圖：question 保留完整月份範圍，例如「2026/1~9月平均 AQI」。
+          完整讀取該範圍的月摘要，不受 top_k 限制，回傳依月份排序的 rows、complete、missing_months。
+          complete=true 才能把完整序列交給 MatplotlibTool；缺月或缺平均值時先告知，不得補造。
         - 整月逐日平均 AQI／趨勢圖：question 明確包含一個年月與「每日」或「逐日」，
           例如「指定年月的每日平均 AQI」。此模式完整讀取該月每日摘要，不受 top_k 限制，
           直接回傳按日期排序的 rows、complete、missing_dates、dates_without_average，供 MatplotlibTool 繪圖。
@@ -268,17 +350,20 @@ class KnowledgeBaseTool(BaseTool):
         pipeline = prompt | llm | StrOutputParser()
         return cls(runnable=pipeline)
 
-    # 依問題選擇完整日序列或 RAG 問答，將結果轉為 JSON。
+    # 依問題選擇完整月／日序列或 RAG 問答，將結果轉為 JSON。
     def _run(self, question: str) -> str:
         try:
+            monthly_period = _monthly_series_period(question)
+            if monthly_period is not None:
+                return json.dumps(query_monthly_series(*monthly_period), ensure_ascii=False)
             period = _daily_series_period(question)
             if period is not None:
                 return json.dumps(query_daily_series(*period), ensure_ascii=False)
         except (ValueError, InvalidOperation):
-            return json.dumps({'error': '日期或每日摘要內容無效，無法取得完整序列。', 'retryable': False}, ensure_ascii=False)
+            return json.dumps({'error': '日期或摘要內容無效，無法取得完整序列。', 'retryable': False}, ensure_ascii=False)
         except Exception as exc:
-            logging.getLogger(__name__).error('每日摘要序列查詢失敗 (%s)', type(exc).__name__)
-            return json.dumps({'error': '每日摘要序列查詢失敗，請檢查知識庫連線。', 'retryable': False}, ensure_ascii=False)
+            logging.getLogger(__name__).error('摘要序列查詢失敗 (%s)', type(exc).__name__)
+            return json.dumps({'error': '摘要序列查詢失敗，請檢查知識庫連線。', 'retryable': False}, ensure_ascii=False)
         answer, sources = query_knowledge_base(question, runnable=self.runnable)
         return json.dumps(
             {"answer": answer, "references": sources},
