@@ -1,36 +1,8 @@
-"""????????????????? .env????????"""
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
-
-
-RAG_SOURCES = {'air_quality_hourly': {'kind': '實際觀測',
-                        'time_column': 'observed_at',
-                        'primary_keys': ['station', 'observed_at'],
-                        'content_columns': ['aqi',
-                                            'air_quality_indicator',
-                                            'pm25',
-                                            'pm10',
-                                            'o3',
-                                            'co',
-                                            'so2',
-                                            'no2']},
- 'air_quality_predictions': {'kind': '逐時預測',
-                             'time_column': 'predicted_at',
-                             'primary_keys': ['station', 'predicted_at'],
-                             'content_columns': ['predicted_aqi', 'actual_aqi']},
- 'air_quality_predictions_8h': {'kind': '多步預測',
-                                'time_column': 'target_at',
-                                'primary_keys': ['station',
-                                                 'target_at',
-                                                 'horizon_hours',
-                                                 'model_version'],
-                                'content_columns': ['predicted_aqi',
-                                                    'horizon_hours',
-                                                    'model_version',
-                                                    'created_at']}}
 
 
 # 集中保存資料庫、模型與 RAG 設定，供各模組共用。
@@ -48,7 +20,6 @@ class Settings:
     seed_data_dir: str
     batch_size: int = 1000
     dry_run: bool = False
-    rag_sources: dict = field(default_factory=dict)
 
     # 以 Ollama 相容的屬性名稱提供模型服務位址。
     @property
@@ -90,9 +61,6 @@ def load_settings() -> Settings:
         seed_data_dir=os.getenv("SEED_DATA_DIR", str(Path(__file__).with_name("seed_data"))),
         batch_size=int(os.getenv("BATCH_SIZE", "1000")),
         dry_run=_env_bool("DRY_RUN", False),
-        rag_sources={name: {key: list(value) if isinstance(value, list) else value
-                            for key, value in spec.items()}
-                     for name, spec in RAG_SOURCES.items()},
     )
 
 
