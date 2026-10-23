@@ -4,7 +4,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from build_pgvector import _build_monthly_documents, _document_id
+from build_pgvector import DAILY_QUERY, MONTHLY_QUERY, _build_monthly_documents, _document_id
 from agent import rag_tool
 
 
@@ -23,18 +23,22 @@ class KnowledgeScopeTests(unittest.TestCase):
         document.metadata['station'] = '另一站'
         self.assertNotEqual(original_id, _document_id(document))
 
-    # 確認指定日期檢索同時套用木柵站條件並標示來源測站。
-    @patch('agent.rag_tool._vector_store')
-    def test_station_filter_combines_with_specific_date(self, store):
-        store.return_value.similarity_search.return_value = [SimpleNamespace(
+    def test_summary_build_queries_have_no_end_year_limit(self):
+        for query in (DAILY_QUERY, MONTHLY_QUERY):
+            self.assertIn("DATE '2026-01-01'", query)
+            self.assertNotIn("DATE '2027-01-01'", query)
+            self.assertNotRegex(query, r"(?:target_at|observed_at)\s*<")
+
+    # 確認指定日期的摘要來源標示測站。
+    @patch('agent.rag_tool._query_summary_documents')
+    def test_specific_date_labels_station_in_sources(self, documents):
+        documents.return_value = [SimpleNamespace(
             page_content='平均實際 AQI：42',
             metadata={'source': rag_tool.SUMMARY_SOURCES[0], 'station': '木柵站', 'date': '2026-04-09'})]
         model = Mock()
         model.invoke.return_value = '42 [1]'
         _, sources = rag_tool.query_knowledge_base('2026/4/9 AQI', runnable=model)
-        self.assertEqual(store.return_value.similarity_search.call_args.kwargs['filter'], {
-            '$and': [{'station': '木柵站'}, {'$and': [
-                {'source': rag_tool.SUMMARY_SOURCES[0]}, {'date': '2026-04-09'}]}]})
+        documents.assert_called_once_with('2026/4/9 AQI')
         self.assertIn('測站：木柵站', sources)
 
 

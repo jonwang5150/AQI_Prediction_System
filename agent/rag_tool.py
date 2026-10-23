@@ -122,6 +122,25 @@ def _query_summary_documents(question: str) -> list[Document]:
     return [Document(page_content=row['document'], metadata=row['cmetadata']) for row in rows]
 
 
+def _missing_summary_periods(question: str, documents: list[Document]) -> list[str]:
+    """確認每個指定期間都有對應來源；整月逐日完整性由序列模式檢查。"""
+    missing = []
+    daily = any(word in question for word in ("每天", "每日", "哪天", "哪一天", "逐日"))
+    for period, has_day in _question_periods(question):
+        source = SUMMARY_SOURCES[0 if has_day or daily else 1]
+        column = 'date' if has_day or daily else 'month'
+        expected = period.isoformat() if has_day else f'{period:%Y-%m}'
+        if not any(
+            document.metadata.get('station') == SUMMARY_STATION
+            and document.metadata.get('source') == source
+            and str(document.metadata.get(column, ''))[:len(expected)] == expected
+            for document in documents
+        ):
+            kind = '每日摘要' if has_day or daily else '每月摘要'
+            missing.append(f'{expected} 的{kind}')
+    return missing
+
+
 # 辨識整月每日平均 AQI 需求，回傳對應的年份與月份。
 def _daily_series_period(question: str):
     if (not any(word in question for word in ('每日', '每天', '逐日'))
@@ -344,6 +363,11 @@ def query_knowledge_base(question: str, *, runnable: Runnable) -> tuple[str, str
             kind = "每日摘要" if metadata.get("source") == SUMMARY_SOURCES[0] else "每月摘要"
             sections.append(f"### [{index}] {kind} {period}\n測站：{metadata.get('station', '未標示')}\n\n{document.page_content}")
         sources = "\n\n---\n\n".join(sections)
+        if requested_period:
+            missing = _missing_summary_periods(question, documents)
+            if missing:
+                return (f"知識庫中缺少 {'、'.join(missing)}，無法完成指定期間的查詢或比較。"
+                        "已取得的摘要保留於參考資料，不以其他期間替代。", sources)
         stage = "產生回答"
         answer = runnable.invoke({"question": question, "sources": sources}).strip()
         return answer or "模型未回傳回答，請重試；可先查看下方參考摘要。", sources
@@ -358,6 +382,11 @@ def query_knowledge_base(question: str, *, runnable: Runnable) -> tuple[str, str
             return f"{stage}失敗：模型服務拒絕授權，請確認 Ollama 登入狀態或 API 金鑰。", sources
         if stage == "檢索知識庫" and isinstance(exc, ConnectionError):
             return "檢索知識庫失敗：無法連線至 embedding 服務，請確認 Ollama 服務及 embedding 設定。", sources
+        if stage == "讀取知識庫摘要":
+            return "讀取知識庫摘要失敗，請確認資料庫連線及知識庫資料表。", sources
+        if stage == "產生回答":
+            return ("產生回答失敗：知識庫摘要已讀取，但回答模型未能完成處理。"
+                    "請確認回答模型服務、連線及授權；可先查看參考摘要。", sources)
         return (f"{stage}失敗。請確認資料庫、Ollama 服務與設定的模型可用；"
                 "若使用雲端模型，請確認已登入或具備有效授權。可稍後重試。", sources)
 

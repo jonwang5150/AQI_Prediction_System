@@ -18,10 +18,10 @@ from agent.rag_tool import (
 
 
 class MonthlySeriesTests(unittest.TestCase):
-    def document(self, month, value='55.00', station='木柵站'):
+    def document(self, month, value='55.00', station='木柵站', year=2026):
         return {'document': f'平均實際 AQI：{value}\n配對樣本數：240', 'cmetadata': {
             'station': station, 'source': SUMMARY_SOURCES[1],
-            'month': f'2026-{month:02d}-01 00:00:00'}}
+            'month': f'{year}-{month:02d}-01 00:00:00'}}
 
     def test_screenshot_question_and_range_variants(self):
         for question in (
@@ -91,15 +91,18 @@ class MonthlySeriesTests(unittest.TestCase):
     def test_query_is_read_only_bounded_and_station_scoped(self, engine):
         connection = MagicMock()
         engine.return_value.connect.return_value.__enter__.return_value = connection
-        connection.execute.return_value.mappings.return_value.all.return_value = [self.document(12)]
-        result = query_monthly_series(2026, 12, 12)
-        calls = connection.execute.call_args_list
-        self.assertEqual(str(calls[0].args[0]), 'SET TRANSACTION READ ONLY')
-        self.assertIn('statement_timeout', str(calls[1].args[0]))
-        self.assertEqual(calls[2].args[1], {
-            'collection': 'aqi_knowledge_base', 'station': '木柵站',
-            'source': SUMMARY_SOURCES[1], 'start': '2026-12', 'end': '2027-01'})
-        self.assertTrue(result['complete'])
+        for year in (2026, 2027, 2030):
+            with self.subTest(year=year):
+                connection.reset_mock()
+                connection.execute.return_value.mappings.return_value.all.return_value = [self.document(12, year=year)]
+                result = query_monthly_series(year, 12, 12)
+                calls = connection.execute.call_args_list
+                self.assertEqual(str(calls[0].args[0]), 'SET TRANSACTION READ ONLY')
+                self.assertIn('statement_timeout', str(calls[1].args[0]))
+                self.assertEqual(calls[2].args[1], {
+                    'collection': 'aqi_knowledge_base', 'station': '木柵站',
+                    'source': SUMMARY_SOURCES[1], 'start': f'{year}-12', 'end': f'{year + 1}-01'})
+                self.assertTrue(result['complete'])
 
     @patch('agent.rag_tool._summary_engine')
     def test_unsupported_year_does_not_query_database(self, engine):

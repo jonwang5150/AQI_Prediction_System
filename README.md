@@ -420,7 +420,7 @@ python build_pgvector.py
 
 - collection：`aqi_knowledge_base`
 - 測站：`木柵站`
-- 年份：2026
+- 年份：2026 年起，後續年份依實際資料建立摘要
 - 預測來源：`air_quality_predictions_8h`
 - 文件：每月摘要與每日摘要
 - embedding：預設 `nomic-embed-text`
@@ -465,8 +465,9 @@ python build_pgvector.py
 
 ### AQIKnowledgeBase
 
-- 查詢 2026 年木柵每日／每月預測評估摘要。
-- 一般問題使用 PGVector 相似度檢索，固定過濾 `station=木柵站`。
+- 查詢 2026 年起的木柵每日／每月預測評估摘要；2026 年以前不支援。
+- 指定日期或月份時，直接從知識庫資料表讀取對應摘要，不需呼叫 embedding 服務。可查詢「比較 2026 年 5 月與 6 月的 MAE」，工具會讀取兩個月摘要。
+- 未指定明確日期／月份的問題使用 PGVector 相似度檢索，仍需 Ollama embedding 服務。兩種檢索方式皆固定過濾 `station=木柵站`，回答由設定的 RAG 語言模型產生。
 - 指定「某年月每日平均 AQI」時，不使用 `top_k` 拼湊序列，而是直接從 PGVector 資料表完整讀取該月每日摘要、排序並檢查缺日。
 - 會將實際使用的摘要顯示在「查看參考摘要」。
 - 不適合查即時 AQI、未來天氣或逐筆原始資料。

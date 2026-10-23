@@ -1,9 +1,10 @@
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from langchain_core.runnables import RunnableLambda
 from agent.rag_tool import (
     _daily_series_period, _format_daily_series, KnowledgeBaseTool, SUMMARY_SOURCES,
+    query_daily_series,
 )
 
 
@@ -39,6 +40,29 @@ class DailySeriesTests(unittest.TestCase):
                      [self.document('2026-06-01')] * 2):
             with self.assertRaises(ValueError):
                 _format_daily_series(docs, 2026, 6)
+
+    @patch('agent.rag_tool._summary_engine')
+    def test_later_years_query_correct_dates_and_preserve_missing_data(self, engine):
+        connection = MagicMock()
+        engine.return_value.connect.return_value.__enter__.return_value = connection
+        connection.execute.return_value.mappings.return_value.all.return_value = []
+        for year, month, end, days in ((2027, 12, '2028-01-01', 31),
+                                       (2028, 2, '2028-03-01', 29)):
+            with self.subTest(year=year, month=month):
+                result = query_daily_series(year, month)
+                params = connection.execute.call_args.args[1]
+                self.assertEqual(params['start'], f'{year}-{month:02d}-01')
+                self.assertEqual(params['end'], end)
+                self.assertFalse(result['complete'])
+                self.assertEqual(len(result['missing_dates']), days)
+                self.assertTrue(all(row['avg_actual_aqi'] is None for row in result['rows']))
+
+    @patch('agent.rag_tool._summary_engine')
+    def test_years_before_2026_do_not_query_database(self, engine):
+        result = query_daily_series(2025, 12)
+        self.assertFalse(result['retryable'])
+        self.assertIn('2026 年起', result['error'])
+        engine.assert_not_called()
 
     # 確認整月每日平均需求直接取得序列，不呼叫語言模型。
     @patch('agent.rag_tool.query_daily_series')
