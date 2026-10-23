@@ -4,6 +4,21 @@
 
 目前智能助理與 RAG 的服務範圍固定為「木柵站／木柵地區」；圖表及預測命令雖可傳入其他測站名稱，但不會改變智能助理的固定服務範圍。
 
+目前 v2 歷史圖表預設採用 **h1（提前 1 小時）**；「8h 模型」表示模型會一次輸出未來第 1～8 小時，不表示所有曲線都採用 h8。RAG 則支援 **2026 年起**的既有摘要，沒有固定結束年份，後續年份仍須先有來源資料並完成建庫。
+
+## 章節導覽
+
+- [系統流程與資料更新範圍](#系統流程)
+- [專案結構](#專案結構)
+- [環境需求與安裝](#環境需求與安裝)、[環境變數](#環境變數)
+- [快速啟動與 h1／h8 切換](#快速啟動)
+- [爬取觀測資料](#爬取觀測資料)
+- [模型訓練](#模型訓練)、[歷史回測與未來預測](#歷史回測與未來預測)
+- [PGVector RAG 知識庫](#pgvector-rag-知識庫)
+- [智能助理與工具](#智能助理與工具)
+- [評估口徑](#評估口徑)、[測試與驗證](#測試與驗證)
+- [常見問題](#常見問題)、[目前限制](#目前限制)
+
 ## 主要功能
 
 | 功能 | 說明 |
@@ -15,7 +30,7 @@
 | 歷史回測 | 可指定半開區間 `[start, end)`，將結果寫回 PostgreSQL |
 | 增量更新 | Gradio 的「更新至最新」會下載新觀測、從各模型最後進度後接續預測、更新向量庫並刷新圖表 |
 | 互動式圖表 | 顯示 v1、v2、真實 AQI、最新未來 8 小時預測，以及 MAE／RMSE／Bias |
-| RAG 知識庫 | 將木柵站 2026 年每日及每月預測評估摘要寫入 PGVector |
+| RAG 知識庫 | 將木柵站 2026 年起的每日及每月預測評估摘要寫入 PGVector；明確日期／月份直接讀取摘要，其他問題使用相似度檢索 |
 | AQI 智能助理 | 依問題選用 RAG、唯讀 SQL、天氣或 Matplotlib 工具，並保留單次網頁 session 對話 |
 | 木柵天氣 | 直接呼叫 Open-Meteo，不使用模型生成氣象數值，提供目前天氣及最多 7 天預報 |
 | 自動製圖 | Agent 將已取得的資料交給 Matplotlib 工具，產生 Python 程式與 PNG 圖檔 |
@@ -31,6 +46,10 @@
 - Agent 工具改為外部注入模型；SQL、RAG、Matplotlib 各自使用獨立模型實例，天氣工具完全不綁定模型。
 - 原本的通用搜尋功能已不在目前專案，改為固定木柵座標的 Open-Meteo 天氣工具。
 - RAG 改用 `KnowledgeBaseTool` 封裝，加入木柵 metadata 過濾、完整逐日序列模式及來源引用。
+- 建庫 SQL 與 RAG 年份檢查改為支援 2026 年起，不再以 2027 年作結束上限；2026 年以前的摘要查詢仍不支援。
+- 指定年月／日期時直接唯讀查詢知識庫文件，不依賴 embedding；支援「某年 5 月與 6 月」沿用年份的比較，並在缺少任一指定期間時停止比較。
+- 整月逐日與同一年跨月的平均實際 AQI 可直接取得完整序列，不受 `TOP_K` 限制；缺日、缺月與缺值分別回報，不補零。
+- RAG 分別回報摘要讀取、embedding 檢索與回答模型的失敗；摘要已讀取而回答失敗時仍保留 `references`。
 - 向量文件 ID 已納入 `source + station + period`，同一份摘要可穩定更新；舊規則留下的資料仍須以 SQL 清除後重建。
 - `main.py` 的更新流程現在會在預測完成後呼叫 `build_knowledge_base()`，再重新載入圖表。
 
@@ -74,10 +93,25 @@ flowchart TD
 
 更新工作有程序內鎖定；同一個 Python 程序不會同時執行兩次更新。
 
+若兩個模型都沒有新的歷史目標需要預測，流程會提前回傳「目前沒有新的有效 AQI 觀測需要預測」，**不會執行第 6 步的向量庫更新**；介面仍會重新載入既有圖表。此時若只想重新整理摘要，須另外執行 `python build_pgvector.py`。
+
+第一次使用時，更新按鈕不會自動回測所有歷史資料：某個模型尚無預測紀錄時，進度由目前最後觀測的下一小時開始。需要完整歷史曲線時，先用 `predict_1h.py`、`predict_8h.py` 指定期間建立預測。
+
+### 哪些操作會改動資料
+
+| 操作 | 原始觀測表 | 預測表 | 知識庫文件及向量 |
+|---|---|---|---|
+| 啟動網頁、切換或縮放圖表、查詢助理 | 唯讀 | 唯讀 | 唯讀，不自動建庫 |
+| 修改 `--horizon` 後重啟 | 不變 | 不變，只選用不同 h 的既有預測 | 不變 |
+| 執行訓練 pipeline | 唯讀 | 不寫入，輸出 checkpoint | 不變 |
+| 執行 `predict_1h.py`／`predict_8h.py` | 唯讀或使用傳入資料 | upsert 對應預測；v2 `--dry-run` 除外 | 不變 |
+| 執行 `build_pgvector.py` | 唯讀 | 唯讀 | 重新計算摘要、產生 embedding 並 upsert |
+| 按「更新至最新」且有待預測資料 | 匯入新觀測 | 接續產生預測 | 預測後呼叫建庫；失敗時顯示階段 |
+
 ## 專案結構
 
 ```text
-DL_AQI/
+AQI_predict_system/
 ├─ main.py                              # 完整 Gradio 入口：圖表、更新、智能助理
 ├─ config.py                            # .env 載入與共用設定
 ├─ db_models.py                         # SQLAlchemy ORM 與 PostgreSQL upsert
@@ -87,7 +121,7 @@ DL_AQI/
 ├─ model_checkpoint.py                  # checkpoint 與 scaler 驗證／還原
 ├─ predict_1h.py                        # v1 歷史逐時預測
 ├─ predict_8h.py                        # v2 h1～h8 回測及未來預測
-├─ build_pgvector.py                    # 建立／更新木柵 2026 年評估摘要向量庫
+├─ build_pgvector.py                    # 建立／更新木柵 2026 年起的評估摘要向量庫
 ├─ aqi_lstm_model.pth                   # v1 checkpoint
 ├─ aqi_lstm_8h_model.pth                # v2 checkpoint
 ├─ pipeline_v1/                         # v1 清理、切分、模型、訓練與評估
@@ -108,14 +142,18 @@ DL_AQI/
 ├─ prediction_visualization/
 │  ├─ load_prediction_data.py           # 載入及挑選最新預測版本
 │  ├─ evaluate_prediction_data.py       # 共同樣本 MAE／RMSE／Bias
-│  └─ visualizations.py                 # Plotly 圖表與 Gradio UI
+│  ├─ visualizations.py                 # Plotly 圖表與 Gradio UI
+│  └─ dashboard.css                     # 儀表板、助理與圖表區版面
 ├─ agent/
 │  ├─ agent.py                          # Agent 規則、模型與工具編排
-│  ├─ rag_tool.py                       # PGVector 檢索及完整逐日序列查詢
+│  ├─ rag_tool.py                       # 明確期間查詢、向量檢索及完整日／月序列
 │  ├─ sql_tool.py                       # 白名單、唯讀 SQL 查詢工具
 │  ├─ weather_tool.py                   # 固定木柵 Open-Meteo 工具
 │  ├─ matplotlib_tool.py                # 產生並執行 Matplotlib 程式
 │  └─ chat_prompt.py                    # LangChain prompt 組裝
+├─ tests/                               # 離線工具、RAG、介面與資料清理測試
+├─ .env.example                        # 環境變數範例，需補齊 DB 等設定
+├─ demo_output/                         # 示範圖片或獨立分析圖表，不是應用程式入口
 └─ charts/                              # Agent 產生的 .py 與 .png 圖表
 ```
 
@@ -157,9 +195,15 @@ ollama list
 
 `build_pgvector.py` 與 `agent/rag_tool.py` 預設連到 `http://localhost:11434`。安裝 Ollama 不代表服務一定正在執行；若出現 `Failed to connect to Ollama`，先確認 `ollama serve` 及 11434 連接埠。
 
+建立／更新向量庫一定需要 embedding；指定日期／月份的摘要讀取及完整序列查詢不需要 embedding，但必須已有知識庫文件。只有圖表顯示時，不會呼叫 embedding 或雲端模型。
+
+建庫與相似度檢索應使用同一個 embedding 模型；僅更改環境變數不會轉換既有文件的向量，更換 embedding 模型時需重新建置對應知識庫。
+
 ## 環境變數
 
 在專案根目錄建立 `.env`。不要提交真實密碼或 API 金鑰：
+
+`.env.example` 目前僅列出 `OLLAMA_API_KEY`；使用時請依下列範例補上資料庫與需要的設定。既有系統環境變數優先於 `.env`，因為 `load_dotenv(..., override=False)` 不會覆寫它們。
 
 ```dotenv
 DATABASE_URL=postgresql+psycopg://YOUR_USER:YOUR_PASSWORD@localhost:5432/YOUR_DATABASE
@@ -199,6 +243,8 @@ SQL_AGENT_DATABASE_URL=postgresql+psycopg://READ_ONLY_USER:PASSWORD@localhost:54
 
 Agent 的模型目前不是由 `.env` 選擇：主 Agent、SQL 與 Matplotlib 使用 `gpt-oss:120b-cloud`，RAG 回答使用 `nemotron-3-ultra:cloud`，都在 `agent/agent.py` 中建立，再注入各工具。
 
+`LLM_BASE_URL` 目前控制 embedding 服務，不會修改上述 `https://ollama.com` 回答模型的位址。embedding 連線失敗與雲端回答／授權失敗是不同問題，應依回報的階段排查。
+
 ## 資料庫結構
 
 資料表會在首次寫入時建立，但 PostgreSQL 資料庫本身必須先存在。
@@ -213,6 +259,8 @@ Agent 的模型目前不是由 `.env` 選擇：主 Agent、SQL 與 Matplotlib �
 
 觀測時間、v1 的 `predicted_at` 及 v2 的 `target_at` 都使用臺灣當地「無時區」時間；v2 的 `created_at` 是帶時區時間。`predict_1h.py`、`predict_8h.py` 的目標區間採 `[start, end)`，包含開始、不包含結束；訓練 pipeline 的 `--start`、`--end` 則以日期指定，包含結束日全天。
 
+v1 預測表沒有模型版本欄位，重跑同測站與時間會覆寫原預測。v2 主鍵包含 `model_version`，不同 checkpoint 的預測可並存；相同版本、測站、目標時間與 h 的重跑結果則會更新原紀錄。
+
 ## 快速啟動
 
 若資料庫、checkpoint、Ollama embedding 與向量庫皆已準備好：
@@ -220,6 +268,19 @@ Agent 的模型目前不是由 `.env` 選擇：主 Agent、SQL 與 Matplotlib �
 ```powershell
 python main.py
 ```
+
+首次準備專案時，依序匯入觀測、準備既有 checkpoint 或執行訓練、建立歷史預測，再執行 `python build_pgvector.py`，最後啟動網頁。各步驟的範例見下方對應章節。
+
+各功能所需的執行服務如下；相關 Python 套件仍須先安裝：
+
+| 功能 | 所需資料／服務 |
+|---|---|
+| 顯示既有歷史曲線與指標 | PostgreSQL 中已有觀測與預測；不需呼叫模型推論、embedding 或雲端回答 |
+| 「更新至最新」完整流程 | 既有觀測、兩個 checkpoint、資料來源網站、PostgreSQL、Ollama embedding |
+| 助理查明確年月／日期摘要 | 已建好的知識庫、PostgreSQL、主 Agent 與 RAG 回答模型 |
+| 助理做未指定年月的相似檢索 | 上列服務，另外需要 Ollama embedding |
+| 完整日／月平均序列工具 | 已建好的知識庫與 PostgreSQL；工具取值本身不呼叫回答模型，助理編排及製圖仍可能使用雲端模型 |
+| 木柵天氣 | Open-Meteo；工具本身不使用 LLM，透過助理呼叫時仍需主 Agent |
 
 常用選項：
 
@@ -252,6 +313,22 @@ python -m prediction_visualization.visualizations --source both --horizon 1 --no
 - `智能助理`
 
 歷史 v2 曲線只顯示指定的 `--horizon`；按下更新後，最新一輪未來 h1～h8 會以綠色虛線顯示，沒有真實值，因此不納入誤差評估。若同一目標時間存在多個 v2 模型版本，圖表依 `created_at` 取最新寫入者。
+
+### h1／h8 的意義與切換
+
+目前預設保留 h1。若只想暫時查看 h8 歷史曲線，可在啟動時指定，不需訓練或改寫預測資料：
+
+```powershell
+# 保留目前預設：v1 單步與 v2 的 h1 比較
+python main.py --horizon 1
+
+# 僅檢視 v2 的 h8 歷史曲線，不啟用更新按鈕
+python -m prediction_visualization.visualizations --source 8h --horizon 8 --no-browser
+```
+
+以目標時間 15:00 為例，h1 使用截至 14:00 的歷史輸入，h8 使用截至 07:00 的歷史輸入。兩者都對準 15:00 的真實 AQI，但預報提前時間不同。最新一次基準時間之後的未來 8 個小時，則分別使用 h1～h8，不能將全部 8 個點都稱為提前 8 小時。
+
+`--horizon` 會同步影響 v2 歷史曲線、三線比較及評估表的資料選取與 h 標籤，不影響 v1，也不會傳給 `build_pgvector.py` 或改變 RAG 摘要的挑選規則。變更啟動參數後須重新啟動服務；只重新整理瀏覽器不會修改既有服務的設定。
 
 MAE、RMSE 與 Bias 只使用所有已載入模型共同具有有限預測與真實值的時間點，不補造真實值，且不隨前端縮放範圍重新計算。
 
@@ -302,6 +379,8 @@ python crawl_to_db.py --stations 木柵站 --start 2026-08-01 --end 2026-08-02 -
 | 預設 checkpoint | `aqi_lstm_model.pth` | `aqi_lstm_8h_model.pth` |
 
 `N` 為成功建立的序列數；h1 表示輸入窗口最後一小時之後的第一小時。兩個模型都取 LSTM 最後一個時間步的輸出送入全連接層，標籤及模型預測皆保留 AQI 原尺度。v2 直接輸出多個時點，不會將前一個預測遞迴當成下一步輸入。
+
+v2 使用整個歷史窗口的 AQI，不只是單一前一小時的數值；v1 的輸入不含 AQI。比較 v1 與 v2 的 h1 時，提前時間相同，但輸入特徵及輸出設計不同，結果代表兩套現有設定的共同效果，不能單獨歸因於模型架構。v1 與 v2 的 h8 比較則同時改變了提前時間，應另外標示。
 
 ### 資料清理與序列建立
 
@@ -429,7 +508,38 @@ python build_pgvector.py
 
 每月摘要的平均與誤差同樣只使用有效預測配對，因此不一定等於原始觀測表全部非空 AQI 的平均。每個目標時間會優先選最新 `created_at` 的 v2 預測；若時間相同，再依較小 `horizon_hours` 及 `model_version` 排序。
 
+建庫 SQL 保留 `>= DATE '2026-01-01'` 的下限，已移除 `< DATE '2027-01-01'` 的上限。資料庫若新增 2027 年或更晚的觀測與預測，再執行建庫就能產生對應摘要，不需要每年調整 SQL；允許年份不代表該期間已存在文件。
+
+### 查詢模式與回傳內容
+
+| 模式 | 問題範例 | 查詢及回傳方式 | 需要 embedding |
+|---|---|---|---|
+| 明確日／月摘要問答 | `2026-05-09 的 MAE`、`2027 年 5 月平均 AQI` | 按測站、來源與日期／月份讀取既有文件，再交由 RAG 回答模型整理 | 否 |
+| 多期間比較 | `比較 2026 年 5 月與 6 月的 MAE` | 解析兩個月份，讀取全部指定摘要並檢查是否缺少任一期間 | 否 |
+| 整月逐日平均實際 AQI | `列出 2026 年 6 月每日平均 AQI` | 完整讀取該月每日摘要，直接回傳結構化序列 | 否 |
+| 同一年跨月平均實際 AQI | `2026/1~9月平均 AQI 長條圖` | 完整讀取同一年指定月範圍，直接回傳結構化序列 | 否 |
+| 未指定明確年月／日期的問答 | `預測評估摘要有哪些指標？` | PGVector 相似度檢索，再交由 RAG 回答模型整理 | 是 |
+
+所有模式均限定 `collection=aqi_knowledge_base`、`station=木柵站` 與對應的每日／每月來源。直接文件及序列查詢使用 PostgreSQL 唯讀交易與 10 秒 statement timeout，讀取的是已建好的摘要，不會即時計算原始表的 MAE，也不會自動建立或更新向量庫。
+
+一般問答回傳 JSON 字串，內容為 `answer`、`references`。參考摘要包含測站、期間及引用編號，外層 Agent 再核對並整理最終回答。指定期間查無文件時不會改用其他月份；只取得部分指定期間時會列出缺少的摘要，保留已取得的 `references`，不呼叫 RAG 回答模型完成比較。
+
+完整序列模式直接回傳資料，不經 RAG 回答模型重建數列：
+
+- 每日序列：`station`、`period`、`rows`、`expected_days`、`retrieved_days`、`complete`、`missing_dates`、`dates_without_average`。
+- 每月序列：`station`、`period`、`rows`、`expected_months`、`retrieved_months`、`complete`、`missing_months`、`months_without_average`。
+- 每筆 `rows` 保留日期或月份、`avg_actual_aqi` 與可取得的 `sample_count`；缺值為 `null`，不補零。來源、統計口徑及繪圖提示也隨結果回傳。
+- 完整序列不受 `TOP_K` 限制；重複摘要、範圍不符或無效數值會被拒絕。Agent 遇到不完整序列時，先說明缺口並詢問是否繪製部分資料。
+
+只寫年份不代表會讀取全年全部摘要。完整跨月序列目前僅支援同一年內、由早到晚的月份範圍與平均實際 AQI；跨年連續區間、其他指標的通用區間查詢應拆成明確日／月提問，不要依相似檢索結果宣稱完整統計。
+
 跨月製圖可輸入「將 2026/1~9月的平均 AQI 轉成長條圖」。知識庫工具會完整讀取範圍內的月摘要，依月份排序並檢查缺月、缺平均值，不受相似搜尋的 `top_k` 限制；缺資料時不會補零。智能助理的「查看圖表」按鈕固定顯示，成功製圖後會自動展開圖表區；模型回傳空白時會顯示提示。
+
+### 何時需要重建向量庫
+
+來源觀測或預測有新增／修正、摘要文字或 SQL 統計規則變更時，執行 `python build_pgvector.py`。此命令重新讀取目前可用的 2026 年起資料、計算文件並產生 embedding，不會修改三張觀測／預測資料表，也不會重新訓練模型。
+
+更換圖表的 `--horizon` 不需要重建向量庫，因為它只影響顯示。若另外修改建庫 SQL，讓摘要固定使用某個 h 或某個模型版本，則必須重建文件；目前並沒有啟用固定 h8 的建庫規則。
 
 文件 ID 使用 `source + station + date/month` 產生固定 UUID，所以相同規則下重跑會更新或新增文件。然而，如果文件 ID／metadata 規則曾改變，或來源資料已刪除，一般 `add_documents()` 不會自動清理失去對應關係的舊文件。
 
@@ -469,6 +579,7 @@ python build_pgvector.py
 - 指定日期或月份時，直接從知識庫資料表讀取對應摘要，不需呼叫 embedding 服務。可查詢「比較 2026 年 5 月與 6 月的 MAE」，工具會讀取兩個月摘要。
 - 未指定明確日期／月份的問題使用 PGVector 相似度檢索，仍需 Ollama embedding 服務。兩種檢索方式皆固定過濾 `station=木柵站`，回答由設定的 RAG 語言模型產生。
 - 指定「某年月每日平均 AQI」時，不使用 `top_k` 拼湊序列，而是直接從 PGVector 資料表完整讀取該月每日摘要、排序並檢查缺日。
+- 同一年跨月平均實際 AQI 同樣有完整月序列模式；它與一般摘要問答的 JSON 欄位不同，詳細欄位見上方「查詢模式與回傳內容」。
 - 會將實際使用的摘要顯示在「查看參考摘要」。
 - 不適合查即時 AQI、未來天氣或逐筆原始資料。
 
@@ -476,7 +587,8 @@ python build_pgvector.py
 
 - 語言模型只負責產生結構化 `QueryPlan`；程式依 ORM 白名單組成 SQLAlchemy `SELECT`。
 - 僅允許三張 AQI 資料表、單表查詢、白名單欄位與 `count/avg/min/max/sum`。
-- 強制木柵站條件，每輪最多 3 個查詢，每個最多 500 列。
+- 強制木柵站條件，單次工具請求最多 3 個查詢，每個最多 500 列；回傳 `truncated=true` 時表示結果超過上限。
+- 主 Agent 每輪最多呼叫 SqlTool 兩次；SQL 工具內部可針對不符合 schema 的模型輸出修正一次，不放寬查詢限制。
 - PostgreSQL transaction 設為唯讀，statement timeout 10 秒、lock timeout 2 秒，結束一律 rollback。
 - 不支援寫入、任意 SQL、JOIN、日期截斷、MAE／RMSE 或每組最新列。
 - 建議用 `SQL_AGENT_DATABASE_URL` 配置只具有三張資料表 `SELECT` 權限的帳號。
@@ -486,16 +598,24 @@ python build_pgvector.py
 - 固定座標為臺北市文山區木柵。
 - 直接呼叫 Open-Meteo Forecast API，不使用 LLM 產生天氣數值。
 - 提供目前氣溫、體感溫度、濕度、降雨及風況，以及今天起 1～7 天逐日預報。
+- `forecast_days` 預設 3，代表從今天起涵蓋的天數；查明天至少需要 2 天，時區為 `Asia/Taipei`。
 - 不提供其他地點、歷史天氣或 AQI 推算。
 
 ### MatplotlibTool
 
 - 接收 Agent 已取得的數值與繪圖需求，不自行讀資料庫或上網。
 - 模型產生完整 Python 程式後，以獨立子程序執行；失敗時會把錯誤交回模型修正一次。
+- 執行逾時預設 60 秒；`MatplotlibTool.create(..., execute=False)` 可只產生程式碼，該模式不會回報圖檔成功。
 - 成功後在 `charts/` 留下 `chart_<id>.py` 與 `chart_<id>.png`，並於 Gradio Gallery 顯示圖片。
 - 目前安全限制主要由 prompt 約束，並不是作業系統層級的完整沙箱；只應搭配可信任的模型服務與執行環境。
 
 智能助理不能更新資料庫、重新訓練模型或產生新的 AQI 預測。資料庫中的「最新」只表示目前已儲存的最新時間，不等於即時資料。
+
+### 對話與圖表回傳
+
+`chat_with_agent(question, history=...)` 回傳 `answer`、`history`、`charts`、`references`、`ok`。每個瀏覽器 session 以自己的 Gradio State 保存歷史，失敗或最終回覆空白且無圖時保留先前對話；「清除對話」不會刪除資料庫或 `charts/` 檔案。
+
+Agent 只把工具明確回報成功、位於專案 `charts/` 下且確實存在的 PNG 加入 Gallery。若已成功產圖但最終文字為空，仍顯示圖片與「圖表已產生」提示。RAG 回答模型失敗時，已讀到的摘要仍會透過 `references` 回傳給主 Agent；這與資料不存在或 embedding 檢索失敗不同。
 
 ## 評估口徑
 
@@ -509,6 +629,37 @@ python build_pgvector.py
 
 圖表比較兩個模型時，只使用兩邊共同存在且預測、實際值皆有限的時間點。RAG 每日／每月摘要則使用其 SQL 查詢所選出的最新 v2 預測配對；兩者統計口徑不可直接假設完全相同。
 
+MAE、RMSE 的單位都是 AQI 點，不是百分比；MAE 也不表示每一筆誤差都不超過該數值。單一 h 的結果不能代表整個 h1～h8 的預測能力。比較不同 h 時，應固定測站、模型版本及共同有效目標時間；可另用「沿用預報基準時間的 AQI」作簡單基準。
+
+每日摘要中的「走勢相反比例」按同一天內相鄰、相隔恰好 1 小時的有效配對計算：實際變化與預測變化都非零時才納入分母，兩者相乘小於零時計為相反。沒有有效方向配對時為缺值。此統計包括微小起伏，與目視判斷整段曲線的大幅反向次數不同；月摘要目前沒有此方向指標。
+
+## 測試與驗證
+
+在安裝完整依賴的同一個 Python 環境、專案根目錄執行：
+
+```powershell
+# 全部現有測試，使用標準函式庫 unittest，不需要另外安裝 pytest
+python -m unittest discover -s tests -p "test_*.py" -v
+
+# 只驗證 RAG 問答與檢索邊界
+python -m unittest discover -s tests -p "test_rag_query.py" -v
+
+# 日／月序列與知識庫範圍
+python -m unittest tests.test_daily_series tests.test_monthly_series tests.test_knowledge_scope -v
+```
+
+| 測試檔案 | 涵蓋行為 |
+|---|---|
+| `test_rag_query.py` | 日期辨識、後續年份、2026 年前拒絕、明確期間唯讀查詢、比較缺月、來源保留及服務錯誤 |
+| `test_daily_series.py`、`test_monthly_series.py` | 完整序列、缺值、排序、月份邊界、閏年、工具路由及製圖介面整合 |
+| `test_knowledge_scope.py` | 木柵來源、固定文件 ID、建庫沒有結束年份上限 |
+| `test_sql_tool.py` | QueryPlan 白名單、木柵限制、日期型別、聚合與唯讀交易 |
+| `test_weather_tool.py` | 固定木柵 API 參數、預報天數、回傳解析與失敗處理 |
+| `test_agent_tools.py`、`test_agent_chat.py` | 工具初始化、非同步呼叫、PNG 產生、對話保存、圖片路徑與空白回答 |
+| `test_v1_data_cleaning.py`、`test_v2_data_cleaning.py` | DB 讀取範圍、日期驗證、特徵及缺值清理 |
+
+現有測試以模擬資料庫與外部服務驗證行為，製圖案例會執行本機 Python 產生暫存 PNG。測試通過不表示 PostgreSQL、Ollama Cloud、embedding 或 Open-Meteo 在部署環境中必定可連線；實際連線需依功能另行檢查。這些測試也不等於模型重新訓練或完整精度評估。
+
 ## 常見問題
 
 ### `Failed to connect to Ollama`
@@ -518,7 +669,29 @@ ollama serve
 ollama list
 ```
 
-確認 `LLM_BASE_URL`、服務連接埠與 `nomic-embed-text` 是否存在。建立向量與每次一般 RAG 查詢都會使用 embedding，因此都需要服務可連線。
+確認 `LLM_BASE_URL`、服務連接埠與 `nomic-embed-text` 是否存在。建立／更新向量與未指定明確年月的相似度檢索需要此服務；明確期間的摘要讀取及完整日／月序列不需要 embedding，但仍須已有知識庫資料。
+
+### RAG 有摘要卻回答失敗，或比較時只拿到一個月份
+
+先依錯誤階段區分問題：
+
+| 訊息或情況 | 代表的階段 | 檢查方向 |
+|---|---|---|
+| `讀取知識庫摘要失敗` | 明確期間的 PostgreSQL 查詢 | 資料庫連線、PGVector 資料表與權限 |
+| `檢索知識庫失敗`、提到 embedding | 未指定明確年月的向量搜尋 | 本機 Ollama、embedding 模型與設定 |
+| `找不到`／`缺少`某日或某月摘要 | 查詢完成，但指定文件不足 | 來源資料是否存在、是否已執行建庫、木柵 metadata 是否正確 |
+| `知識庫摘要已讀取，但回答模型未能完成處理` | 摘要已取回，RAG 回答步驟失敗 | 雲端模型連線、授權與模型服務；先查看參考摘要 |
+| HTTP 401／403、HTTP 5xx | 模型服務拒絕授權或上游錯誤 | 依狀態及回報階段檢查，不視為資料不存在 |
+
+例如「比較 2026 年 5 月與 6 月的 MAE」會辨識成兩個月份，只有兩個指定摘要皆存在時才交給 RAG 模型比較。缺月時不以其他月份代替，也不因服務失敗就改問另一個指標。
+
+### 為什麼按更新卻沒有更新向量庫
+
+目前沒有新資料需要預測時，`update_to_latest()` 會提前結束，跳過 `build_knowledge_base()`。如果只是調整了摘要規則或需要重建既有文件，請單獨執行 `python build_pgvector.py`，並確認 embedding 服務可連線。只開圖表或切換畫面不會重建向量庫。
+
+### 為什麼換成 h8 後，RAG 的 MAE 沒有跟著變
+
+`--horizon 8` 只改變圖表與評估表使用的歷史預測。建庫 SQL 仍是依 `created_at DESC, horizon_hours ASC, model_version ASC` 選取，不固定 h8；重新繪圖也不會覆寫摘要。先確認兩邊的 h、模型版本與有效樣本是否一致，再比較指標。
 
 ### Agent 顯示授權失敗
 
@@ -549,8 +722,10 @@ Matplotlib 工具依序嘗試 `Noto Sans CJK TC`、`Microsoft JhengHei`、`PingF
 ## 目前限制
 
 - 智能助理、天氣與 RAG 固定服務木柵；不支援跨測站比較。
-- RAG 摘要 SQL 固定為 2026 年，需修改程式才能建立其他年份。
+- RAG 只支援 2026 年起的摘要；後續年份須先匯入資料並完成建庫，未建庫不代表可以用其他年份替代。
 - RAG 摘要來自 v2 預測，不代表固定單一 `horizon_hours` 或固定模型版本的評估。
+- 完整跨月平均 AQI 序列只支援同一年；相似度檢索只有部分文件，不能作為全年極值、排名或完整統計的證據。
+- 更新按鈕沒有待預測資料時不會重建向量庫；摘要 SQL 或文件規則調整後需另行建庫。
 - 氣象工具依賴 Open-Meteo 網路服務；Agent 回答與製圖依賴 Ollama Cloud。
 - Matplotlib 工具會執行模型產生的 Python 程式，不適合在不受信任的多租戶主機直接開放。
 - 專案尚未提供套件鎖定檔；重現環境時應自行固定已驗證的版本。
