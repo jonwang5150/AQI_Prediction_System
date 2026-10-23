@@ -27,7 +27,6 @@ WITH ranked_predictions AS (
     FROM air_quality_predictions_8h
     WHERE station = :station
       AND target_at >= DATE '2026-01-01'
-      AND target_at < DATE '2027-01-01'
 ),
 paired AS (
     SELECT
@@ -44,7 +43,6 @@ paired AS (
       AND p.predicted_aqi IS NOT NULL
       AND a.station = :station
       AND a.observed_at >= DATE '2026-01-01'
-      AND a.observed_at < DATE '2027-01-01'
 )
 SELECT
     DATE_TRUNC('month', observed_at) AS month,
@@ -73,7 +71,6 @@ WITH ranked_predictions AS (
     FROM air_quality_predictions_8h
     WHERE station = :station
       AND target_at >= DATE '2026-01-01'
-      AND target_at < DATE '2027-01-01'
 ),
 paired AS (
     SELECT
@@ -90,7 +87,6 @@ paired AS (
       AND p.predicted_aqi IS NOT NULL
       AND a.station = :station
       AND a.observed_at >= DATE '2026-01-01'
-      AND a.observed_at < DATE '2027-01-01'
 ),
 daily_changes AS (
     SELECT
@@ -139,7 +135,6 @@ observations AS (
     WHERE aqi IS NOT NULL
       AND station = :station
       AND observed_at >= DATE '2026-01-01'
-      AND observed_at < DATE '2027-01-01'
 ),
 daily_extremes AS (
     SELECT DATE(observed_at) AS date,
